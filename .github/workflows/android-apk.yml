@@ -104,49 +104,7 @@ jobs:
             if [ -f "tools/replace_icon.py" ]; then
               python3 tools/replace_icon.py --icon-url "$ICON_URL" --res-dir "app/src/main/res"
             else
-              python3 - <<'PY'
-import argparse
-import io
-import os
-import urllib.request
-
-from PIL import Image
-
-ap = argparse.ArgumentParser()
-ap.add_argument("--icon-url", required=True)
-ap.add_argument("--res-dir", required=True)
-args = ap.parse_args()
-
-req = urllib.request.Request(
-    args.icon_url,
-    headers={"User-Agent": "android-apk-builder"},
-    method="GET",
-)
-with urllib.request.urlopen(req, timeout=30) as r:
-    raw = r.read()
-
-img = Image.open(io.BytesIO(raw))
-
-def ensure_dir(p: str) -> None:
-    os.makedirs(p, exist_ok=True)
-
-def write_webp(img: Image.Image, out_path: str, size: int) -> None:
-    im = img.copy().convert("RGBA").resize((size, size), Image.LANCZOS)
-    ensure_dir(os.path.dirname(out_path))
-    im.save(out_path, format="WEBP", quality=92, method=6)
-
-targets = [
-    ("mipmap-mdpi", 48),
-    ("mipmap-hdpi", 72),
-    ("mipmap-xhdpi", 96),
-    ("mipmap-xxhdpi", 144),
-    ("mipmap-xxxhdpi", 192),
-]
-for d, size in targets:
-    base = os.path.join(args.res_dir, d)
-    write_webp(img, os.path.join(base, "ic_launcher.webp"), size)
-    write_webp(img, os.path.join(base, "ic_launcher_round.webp"), size)
-PY
+              echo "tools/replace_icon.py not found, skip icon replace"
             fi
             curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
               -H "Content-Type: application/json" \
