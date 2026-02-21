@@ -30,6 +30,8 @@ jobs:
           BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
           BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
         run: |
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
           if [ -z "$BUILD_BACKEND_BASE_URL" ]; then
             echo "BUILD_BACKEND_BASE_URL is empty"
             exit 1
@@ -56,13 +58,18 @@ jobs:
           BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
           BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
         run: |
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
           curl -sS "$BUILD_BACKEND_BASE_URL/api/build/apk-config?apkId=${{ inputs.apk_id }}" \
             -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
             -H "ngrok-skip-browser-warning: 1" > build-config.json
           cat build-config.json | head -c 2000
-          echo "APP_NAME=$(jq -r '.data.name // \"\"' build-config.json)" >> $GITHUB_ENV
-          echo "PACKAGE_NAME=$(jq -r '.data.packageName // \"\"' build-config.json)" >> $GITHUB_ENV
-          echo "ICON_URL=$(jq -r '.data.iconUrl // \"\"' build-config.json)" >> $GITHUB_ENV
+          APP_NAME="$(jq -r '.data.name // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          PACKAGE_NAME="$(jq -r '.data.packageName // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          ICON_URL="$(jq -r '.data.iconUrl // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
+          echo "ICON_URL=$ICON_URL" >> $GITHUB_ENV
 
       - name: Report config loaded
         env:
@@ -140,6 +147,10 @@ jobs:
             -d "{\"buildId\":\"${{ inputs.build_tag }}\",\"apkId\":\"${{ inputs.apk_id }}\",\"status\":\"BUILDING\",\"progress\":60,\"message\":\"gradle_start\"}" || true
           ./gradlew :app:assembleDebug :app:assembleRelease
 
+      - name: List APK outputs
+        run: |
+          find . -type f -name '*.apk' | head -n 50 || true
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -147,6 +158,7 @@ jobs:
           path: |
             **/.trae-build/**/outputs/apk/**/*.apk
             **/build/outputs/apk/**/*.apk
+            **/*.apk
 
       - name: Upload APK to backend
         if: success()
@@ -155,6 +167,8 @@ jobs:
           BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
         run: |
           set -e
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
           APK_PATH="$(find . -type f -name '*.apk' | grep -E '/release/|release' | head -n 1 || true)"
           if [ -z "$APK_PATH" ]; then
             APK_PATH="$(find . -type f -name '*.apk' | head -n 1 || true)"
@@ -171,7 +185,7 @@ jobs:
             -F "apkId=${{ inputs.apk_id }}" \
             -F "file=@$APK_PATH" > upload.json
           cat upload.json | head -c 2000
-          echo "ARTIFACT_URL=$(jq -r '.data.artifactUrl // \"\"' upload.json)" >> $GITHUB_ENV
+          echo "ARTIFACT_URL=$(jq -r '.data.artifactUrl // ""' upload.json | tr -d '\r' | sed 's/`//g' | xargs)" >> $GITHUB_ENV
 
       - name: Report success
         if: success()
