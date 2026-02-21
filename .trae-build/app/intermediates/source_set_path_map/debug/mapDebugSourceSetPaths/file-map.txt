@@ -1,0 +1,36 @@
+com.example.demo.app-lifecycle-viewmodel-2.6.2-0 C:\Users\Administrator\.gradle\caches\8.13\transforms\11ebbf556048aba668cb2af617faab76\transformed\lifecycle-viewmodel-2.6.2\res
+com.example.demo.app-core-runtime-2.2.0-1 C:\Users\Administrator\.gradle\caches\8.13\transforms\2e7d34cf3d45783111893f7e6ca9137d\transformed\core-runtime-2.2.0\res
+com.example.demo.app-lifecycle-process-2.6.2-2 C:\Users\Administrator\.gradle\caches\8.13\transforms\33b243a945a2a5c22f5b2f7d124d0def\transformed\lifecycle-process-2.6.2\res
+com.example.demo.app-lifecycle-runtime-2.6.2-3 C:\Users\Administrator\.gradle\caches\8.13\transforms\3da9625f3b93ed4ff9e9b078835eb26a\transformed\lifecycle-runtime-2.6.2\res
+com.example.demo.app-core-ktx-1.17.0-4 C:\Users\Administrator\.gradle\caches\8.13\transforms\4a7eefeea91cd6482de48814b119219e\transformed\core-ktx-1.17.0\res
+com.example.demo.app-constraintlayout-2.0.1-5 C:\Users\Administrator\.gradle\caches\8.13\transforms\52e9be22fd2cb8bc096ca1280a1fd294\transformed\constraintlayout-2.0.1\res
+com.example.demo.app-appcompat-resources-1.7.0-6 C:\Users\Administrator\.gradle\caches\8.13\transforms\5bf9fa91235ef84a4524e173110fdd62\transformed\appcompat-resources-1.7.0\res
+com.example.demo.app-material-1.12.0-7 C:\Users\Administrator\.gradle\caches\8.13\transforms\64f8411a647a0377789f9a8709baf5c6\transformed\material-1.12.0\res
+com.example.demo.app-lifecycle-viewmodel-savedstate-2.6.2-8 C:\Users\Administrator\.gradle\caches\8.13\transforms\67f7597daee6a7382239cf30ce81a5fa\transformed\lifecycle-viewmodel-savedstate-2.6.2\res
+com.example.demo.app-cardview-1.0.0-9 C:\Users\Administrator\.gradle\caches\8.13\transforms\730ad1ca2bf38a0cad021277e060c412\transformed\cardview-1.0.0\res
+com.example.demo.app-profileinstaller-1.3.1-10 C:\Users\Administrator\.gradle\caches\8.13\transforms\78e15495e4706e4c5e77914138abb603\transformed\profileinstaller-1.3.1\res
+com.example.demo.app-emoji2-views-helper-1.3.0-11 C:\Users\Administrator\.gradle\caches\8.13\transforms\7919ed9ce1c46355f0d97d40f4751a1c\transformed\emoji2-views-helper-1.3.0\res
+com.example.demo.app-emoji2-1.3.0-12 C:\Users\Administrator\.gradle\caches\8.13\transforms\7b854e55efaec9b845496947d9d99ae9\transformed\emoji2-1.3.0\res
+com.example.demo.app-startup-runtime-1.1.1-13 C:\Users\Administrator\.gradle\caches\8.13\transforms\8277ab2bcd628a33e4bf36801f6a90a4\transformed\startup-runtime-1.1.1\res
+com.example.demo.app-activity-1.8.0-14 C:\Users\Administrator\.gradle\caches\8.13\transforms\8c2fdf530a0d21685275343e7349bf3e\transformed\activity-1.8.0\res
+com.example.demo.app-appcompat-1.7.0-15 C:\Users\Administrator\.gradle\caches\8.13\transforms\9f56bb6d62295b7dda40d92e97f9c501\transformed\appcompat-1.7.0\res
+com.example.demo.app-tracing-1.2.0-16 C:\Users\Administrator\.gradle\caches\8.13\transforms\a066108e6b9fc87a132baa34b2348e86\transformed\tracing-1.2.0\res
+com.example.demo.app-lifecycle-livedata-core-2.6.2-17 C:\Users\Administrator\.gradle\caches\8.13\transforms\a36941bb6c81ed09e1c1e85b1f7ada7b\transformed\lifecycle-livedata-core-2.6.2\res
+com.example.demo.app-drawerlayout-1.1.1-18 C:\Users\Administrator\.gradle\caches\8.13\transforms\aab5e9038b6aca695b0f41e1584aace5\transformed\drawerlayout-1.1.1\res
+com.example.demo.app-fragment-1.5.4-19 C:\Users\Administrator\.gradle\caches\8.13\transforms\b18f2fb01e2f4e2f0f21984881deb138\transformed\fragment-1.5.4\res
+com.example.demo.app-core-1.17.0-20 C:\Users\Administrator\.gradle\caches\8.13\transforms\bdfe02ec2b2d2b5ff0bdd28ea3969770\transformed\core-1.17.0\res
+com.example.demo.app-lifecycle-livedata-2.6.2-21 C:\Users\Administrator\.gradle\caches\8.13\transforms\c08dc0a3539e8103fdd9912ffa233cc3\transformed\lifecycle-livedata-2.6.2\res
+com.example.demo.app-transition-1.5.0-22 C:\Users\Administrator\.gradle\caches\8.13\transforms\def2be3b73daa71c7430fb17d4781399\transformed\transition-1.5.0\res
+com.example.demo.app-coordinatorlayout-1.1.0-23 C:\Users\Administrator\.gradle\caches\8.13\transforms\f2154775524e848680bacadb7783d86c\transformed\coordinatorlayout-1.1.0\res
+com.example.demo.app-recyclerview-1.1.0-24 C:\Users\Administrator\.gradle\caches\8.13\transforms\f3b9104fa2d36e313af8c010bf25fca3\transformed\recyclerview-1.1.0\res
+com.example.demo.app-annotation-experimental-1.4.1-25 C:\Users\Administrator\.gradle\caches\8.13\transforms\f4e694f7b7584d53c31e7ceb75e092c1\transformed\annotation-experimental-1.4.1\res
+com.example.demo.app-savedstate-1.2.1-26 C:\Users\Administrator\.gradle\caches\8.13\transforms\f716f119d9335b5cabe8225c92606804\transformed\savedstate-1.2.1\res
+com.example.demo.app-viewpager2-1.0.0-27 C:\Users\Administrator\.gradle\caches\8.13\transforms\fe2f32bbd569605abf8d4164b5cb21d9\transformed\viewpager2-1.0.0\res
+com.example.demo.app-core-viewtree-1.0.0-28 C:\Users\Administrator\.gradle\caches\8.13\transforms\ff6fba6a7a4eb84559896206036987a1\transformed\core-viewtree-1.0.0\res
+com.example.demo.app-pngs-29 C:\Users\Administrator\Desktop\android demo\android\.trae-build\app\generated\res\pngs\debug
+com.example.demo.app-resValues-30 C:\Users\Administrator\Desktop\android demo\android\.trae-build\app\generated\res\resValues\debug
+com.example.demo.app-packageDebugResources-31 C:\Users\Administrator\Desktop\android demo\android\.trae-build\app\intermediates\incremental\debug\packageDebugResources\merged.dir
+com.example.demo.app-packageDebugResources-32 C:\Users\Administrator\Desktop\android demo\android\.trae-build\app\intermediates\incremental\debug\packageDebugResources\stripped.dir
+com.example.demo.app-debug-33 C:\Users\Administrator\Desktop\android demo\android\.trae-build\app\intermediates\merged_res\debug\mergeDebugResources
+com.example.demo.app-debug-34 C:\Users\Administrator\Desktop\android demo\android\app\src\debug\res
+com.example.demo.app-main-35 C:\Users\Administrator\Desktop\android demo\android\app\src\main\res

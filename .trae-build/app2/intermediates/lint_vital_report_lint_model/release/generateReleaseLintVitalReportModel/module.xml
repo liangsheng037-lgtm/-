@@ -1,0 +1,19 @@
+<lint-module
+    format="1"
+    dir="C:\Users\Administrator\Desktop\android demo\android\app"
+    name=":app"
+    type="APP"
+    maven="demo:app:unspecified"
+    agpVersion="8.12.3"
+    buildFolder="C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2"
+    bootClassPath="C:\Users\Administrator\AppData\Local\Android\Sdk\platforms\android-36\android.jar;C:\Users\Administrator\AppData\Local\Android\Sdk\build-tools\35.0.0\core-lambda-stubs.jar"
+    javaSourceLevel="11"
+    compileTarget="android-36"
+    neverShrinking="true">
+  <lintOptions
+      abortOnError="true"
+      absolutePaths="true"
+      checkReleaseBuilds="true"
+      explainIssues="true"/>
+  <variant name="release"/>
+</lint-module>

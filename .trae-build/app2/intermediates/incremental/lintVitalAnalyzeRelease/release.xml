@@ -1,0 +1,31 @@
+<variant
+    name="release"
+    package="com.example.demo"
+    minSdkVersion="24"
+    targetSdkVersion="36.0"
+    mergedManifest="C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\intermediates\merged_manifest\release\processReleaseMainManifest\AndroidManifest.xml"
+    proguardFiles="C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\intermediates\default_proguard_files\global\proguard-android-optimize.txt-8.12.3;proguard-rules.pro"
+    partialResultsDir="C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\intermediates\lint_vital_partial_results\release\lintVitalAnalyzeRelease\out"
+    desugaredMethodsFiles="C:\Users\Administrator\.gradle\caches\8.13\transforms\c42b5d4bc6536bbf1dd1dd06424b3a39\transformed\D8BackportedDesugaredMethods.txt">
+  <buildFeatures
+      namespacing="REQUIRED"/>
+  <sourceProviders>
+    <sourceProvider
+        manifests="src\main\AndroidManifest.xml"
+        javaDirectories="src\main\java;src\release\java;src\main\kotlin;src\release\kotlin"
+        resDirectories="src\main\res;src\release\res"
+        assetsDirectories="src\main\assets;src\release\assets"/>
+  </sourceProviders>
+  <testSourceProviders>
+  </testSourceProviders>
+  <testFixturesSourceProviders>
+  </testFixturesSourceProviders>
+  <artifact
+      classOutputs="C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\intermediates\javac\release\compileReleaseJavaWithJavac\classes;C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\tmp\kotlin-classes\release;C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\kotlinToolingMetadata;C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\intermediates\compile_and_runtime_not_namespaced_r_class_jar\release\processReleaseResources\R.jar"
+      type="MAIN"
+      applicationId="com.example.demo"
+      generatedSourceFolders="C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\generated\ap_generated_sources\release\out;C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\generated\source\buildConfig\release"
+      generatedResourceFolders="C:\Users\Administrator\Desktop\android demo\android\.trae-build\app2\generated\res\resValues\release"
+      desugaredMethodsFiles="C:\Users\Administrator\.gradle\caches\8.13\transforms\c42b5d4bc6536bbf1dd1dd06424b3a39\transformed\D8BackportedDesugaredMethods.txt">
+  </artifact>
+</variant>

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="#F5F5F5"
+    android:padding="16dp">
+
+    <!-- 隐藏的状态文本，仅保留逻辑需要 -->
+    <TextView
+        android:id="@+id/status_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone"/>
+
+    <TextView
+        android:id="@+id/password_info_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone"/>
+
+    <Button
+        android:id="@+id/settings_button"
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:text="1. 开启辅助服务"
+        android:backgroundTint="#2196F3"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:layout_marginBottom="40dp"/>
+
+    <!-- 移除了悬浮窗权限按钮，因为无障碍服务自带 overlay 能力 -->
+
+    <!-- 核心支付按钮 -->
+    <Button
+        android:id="@+id/btn_alipay"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:text="支付宝支付"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#1677FF"
+        android:elevation="4dp"/>
+        
+    <!-- 内置浏览器容器：恢复显示 -->
+    <WebView
+        android:id="@+id/webview"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="20dp"
+        android:visibility="gone" />
+
+</LinearLayout>
