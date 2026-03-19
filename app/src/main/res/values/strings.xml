@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">自动支付助手</string>
+    <string name="app_name">demo</string>
     <string name="accessibility_service_description">自动支付助手需要无障碍权限来模拟点击和输入，以实现批量支付功能。</string>
     <string name="service_enabled">服务已开启</string>
     <string name="service_disabled">服务未开启</string>

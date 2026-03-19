@@ -10,6 +10,12 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
+    <WebView
+        android:id="@+id/payment_webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="invisible" />
+
     <LinearLayout
         android:id="@+id/home_container"
         android:layout_width="match_parent"
@@ -47,5 +53,12 @@
             android:elevation="4dp" />
 
     </LinearLayout>
+
+    <include
+        android:id="@+id/payment_confirm_overlay"
+        layout="@layout/activity_payment_done_confirm"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
 
 </FrameLayout>

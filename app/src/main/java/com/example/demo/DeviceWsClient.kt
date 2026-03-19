@@ -1,6 +1,7 @@
 package com.example.demo
 
 import android.content.Context
+import android.content.Intent
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
@@ -16,9 +17,9 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.net.URI
-import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
@@ -46,8 +47,8 @@ class DeviceWsClient private constructor(private val context: Context) {
         val deviceId =
             Settings.Secure.getString(appContext.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_device"
 
-        val wsUrl = buildWsUrl(ApiClient.getServerBaseUrl(appContext), deviceId, token) ?: return
-        val req = Request.Builder().url(wsUrl).build()
+        val wsUrl = buildWsUrl(ApiClient.getServerBaseUrl(appContext), deviceId) ?: return
+        val req = Request.Builder().url(wsUrl).addHeader("X-Device-Token", token).build()
         ws = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.i(TAG, "WS connected")
@@ -175,6 +176,51 @@ class DeviceWsClient private constructor(private val context: Context) {
         if (seq > lastAckFromServer) {
             lastAckFromServer = seq
         }
+        if (type == "CMD") {
+            val data = p.optJSONObject("data") ?: JSONObject()
+            val cmd = data.optString("cmd", "").trim().uppercase(Locale.getDefault())
+            when (cmd) {
+                "START_LOOP" -> {
+                    try {
+                        appContext
+                            .getSharedPreferences("app_config", Context.MODE_PRIVATE)
+                            .edit()
+                            .putBoolean("remote_start_loop_pending", true)
+                            .apply()
+                        appContext.startActivity(
+                            Intent(appContext, MainActivity::class.java).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                                putExtra("remote_start_loop", true)
+                            },
+                        )
+                    } catch (_: Exception) {
+                    }
+                }
+                "STOP_LOOP" -> {
+                    try {
+                        appContext.startService(
+                            Intent(appContext, AutoPaymentService::class.java).apply {
+                                action = AutoPaymentService.ACTION_STOP_LOOP
+                            },
+                        )
+                    } catch (_: Exception) {
+                    }
+                }
+                "SET_OVERLAY_MODE" -> {
+                    val mode = data.optString("overlayMode", "").trim().uppercase(Locale.getDefault())
+                    if (mode == "HTML" || mode == "TRANSPARENT") {
+                        appContext
+                            .getSharedPreferences("app_config", Context.MODE_PRIVATE)
+                            .edit()
+                            .putString("overlay_mode", mode)
+                            .apply()
+                        AutoPaymentService.instance?.requestOverlayRefresh()
+                    }
+                }
+            }
+        }
         sendEncryptedPayload(
             JSONObject().apply {
                 put("type", "ACK")
@@ -228,7 +274,7 @@ class DeviceWsClient private constructor(private val context: Context) {
         return SecretKeySpec(sum, "AES")
     }
 
-    private fun buildWsUrl(baseUrl: String, deviceId: String, token: String): String? {
+    private fun buildWsUrl(baseUrl: String, deviceId: String): String? {
         return try {
             val u = URI(baseUrl)
             val scheme = if (u.scheme.equals("https", true)) "wss" else "ws"
@@ -236,8 +282,7 @@ class DeviceWsClient private constructor(private val context: Context) {
             val port = u.port
             val pathPrefix = (u.path ?: "").trimEnd('/')
             val wsPath = "$pathPrefix/ws/device"
-            val q =
-                "deviceId=${URLEncoder.encode(deviceId, "UTF-8")}&token=${URLEncoder.encode(token, "UTF-8")}"
+            val q = "deviceId=$deviceId"
             URI(scheme, null, host, port, wsPath, q, null).toString()
         } catch (_: Exception) {
             null

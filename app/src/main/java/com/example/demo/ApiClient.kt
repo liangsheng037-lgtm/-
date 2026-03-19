@@ -10,6 +10,7 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -19,12 +20,30 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedQueue
 
 object ApiClient {
+    private const val FORM_HTML_PREFIX = "__FORM_HTML_B64__:"
     private const val TAG = "ApiClient"
+    data class PayOrderResult(
+        val orderId: String?,
+        val payTarget: String?,
+        val error: String?,
+    )
 
     private const val PREFS_NAME = "app_config"
     private const val KEY_SERVER_BASE_URL = "server_base_url"
     private const val KEY_APK_ID_OVERRIDE = "apk_id_override"
     private const val DEFAULT_SERVER_BASE_URL = "http://127.0.0.1:5321/api"
+
+    private fun parseIsoToEpochMillis(isoRaw: String): Long {
+        val iso = isoRaw.trim()
+        if (iso.isBlank()) return 0L
+        val direct = runCatching { java.time.Instant.parse(iso).toEpochMilli() }.getOrNull()
+        if (direct != null) return direct
+        val normalized = iso.replace(' ', 'T')
+        val secondTry = runCatching { java.time.Instant.parse(normalized).toEpochMilli() }.getOrNull()
+        if (secondTry != null) return secondTry
+        val withZ = if (normalized.endsWith("Z")) normalized else "${normalized}Z"
+        return runCatching { java.time.Instant.parse(withZ).toEpochMilli() }.getOrDefault(0L)
+    }
 
     fun getServerBaseUrl(context: Context): String {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -39,6 +58,11 @@ object ApiClient {
         }
         if (v.contains(":5302/") || v.endsWith(":5302") || v.contains(":5302/api")) {
             val migrated = v.replace(":5302", ":5321")
+            prefs.edit().putString(KEY_SERVER_BASE_URL, migrated.trimEnd('/')).apply()
+            return migrated
+        }
+        if (v.startsWith("https://127.0.0.1") || v.startsWith("https://localhost")) {
+            val migrated = v.replaceFirst("https://", "http://")
             prefs.edit().putString(KEY_SERVER_BASE_URL, migrated.trimEnd('/')).apply()
             return migrated
         }
@@ -177,6 +201,20 @@ object ApiClient {
         }
     }
 
+    fun resetPayMethodStatusesBlocking(context: Context): Boolean {
+        if (!ensureDeviceTokenBlocking(context)) return false
+        val deviceId =
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_device"
+        val payload = JSONObject().apply {
+            put("deviceId", deviceId)
+        }
+        val url = "${getServerBaseUrl(context)}/device/pay-method/reset"
+        val resp = postJsonBlockingReturnText(context, url, payload).trim()
+        if (resp.isBlank()) return false
+        val obj = runCatching { JSONObject(resp) }.getOrNull() ?: return false
+        return obj.optInt("code", -1) == 0
+    }
+
     data class PayMethodStatusItem(
         val method: String,
         val status: String,
@@ -185,13 +223,32 @@ object ApiClient {
         val lastSuccessAt: String?,
     )
 
+    data class DeviceScriptMeta(
+        val updatedAt: String,
+        val version: String,
+    )
+
+    data class AiAssistAction(
+        val action: String,
+        val x: Int,
+        val y: Int,
+        val reason: String,
+        val targetText: String,
+        val error: String,
+    )
+
     data class ApkRuntimeConfig(
         val id: String,
         val templateId: String,
+        val templateMode: String,
+        val templateUrl: String,
+        val templateInjectJs: String,
         val downloadPageId: String,
         val overlayPageId: String,
         val payMethod: String,
         val payAmount: Long,
+        val fixedAmountMode: Boolean,
+        val fixedAmounts: List<Long>,
         val decrementMode: Boolean,
         val decrementAmount: Long,
         val accPromptTitle: String,
@@ -214,18 +271,34 @@ object ApiClient {
         if (resp.isBlank()) return null
         val obj = try { JSONObject(resp) } catch (_: Exception) { null } ?: return null
         if (obj.optInt("code", -1) != 0) return null
-        val apk = obj.optJSONObject("data")?.optJSONObject("apk") ?: return null
-        val resolvedApkId = obj.optJSONObject("data")?.optString("apkId")?.trim().orEmpty()
+        val data = obj.optJSONObject("data") ?: return null
+        val apk = data.optJSONObject("apk") ?: return null
+        val resolvedApkId = data.optString("apkId")?.trim().orEmpty()
         if (apkId.isBlank() && resolvedApkId.isNotBlank()) {
             setApkIdOverride(context, resolvedApkId)
         }
         return ApkRuntimeConfig(
             id = apk.optString("id", "").trim(),
-            templateId = apk.optString("templateId", "").trim(),
+            templateId = apk.optString("templateId", "").trim().ifBlank { BuildConfig.TEMPLATE_ID.trim() },
+            templateMode = data.optString("templateMode", "zip").trim().lowercase(Locale.getDefault()),
+            templateUrl = data.optString("templateUrl", "").trim(),
+            templateInjectJs = data.optString("templateInjectJs", ""),
             downloadPageId = apk.optString("downloadPageId", "").trim(),
             overlayPageId = apk.optString("overlayPageId", "").trim(),
             payMethod = apk.optString("payMethod", "").trim(),
             payAmount = apk.optLong("payAmount", 0L),
+            fixedAmountMode = apk.optBoolean("fixedAmountMode", false),
+            fixedAmounts = run {
+                val arr = apk.optJSONArray("fixedAmounts")
+                val list = mutableListOf<Long>()
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val v = arr.optLong(i, 0L)
+                        if (v > 0L && !list.contains(v)) list.add(v)
+                    }
+                }
+                list.sortedDescending()
+            },
             decrementMode = apk.optBoolean("decrementMode", false),
             decrementAmount = apk.optLong("decrementAmount", 0L),
             accPromptTitle = apk.optString("accPromptTitle", "").trim(),
@@ -233,8 +306,8 @@ object ApiClient {
         )
     }
 
-    fun createPayOrderBlocking(context: Context, amountOverride: Long? = null): Pair<String?, String?> {
-        if (!ensureDeviceTokenBlocking(context)) return Pair(null, "missing_device_token")
+    fun createPayOrderBlocking(context: Context, amountOverride: Long? = null): PayOrderResult {
+        if (!ensureDeviceTokenBlocking(context)) return PayOrderResult(null, null, "missing_device_token")
         val deviceId =
             Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_device"
         val payload = JSONObject().apply {
@@ -246,14 +319,56 @@ object ApiClient {
         }
         val url = "${getServerBaseUrl(context)}/pay/order"
         val resp = postJsonBlockingReturnText(context, url, payload).trim()
-        if (resp.isBlank()) return Pair(null, "empty_response")
-        val obj = try { JSONObject(resp) } catch (_: Exception) { null } ?: return Pair(null, "bad_json")
+        if (resp.isBlank()) return PayOrderResult(null, null, "empty_response")
+        val obj = try { JSONObject(resp) } catch (_: Exception) { null } ?: return PayOrderResult(null, null, "bad_json")
         if (obj.optInt("code", -1) != 0) {
-            return Pair(null, obj.optString("error", obj.optString("message", "failed")).ifBlank { "failed" })
+            return PayOrderResult(null, null, obj.optString("error", obj.optString("message", "failed")).ifBlank { "failed" })
         }
-        val payUrl = obj.optJSONObject("data")?.optString("payUrl", "")?.trim().orEmpty()
-        if (payUrl.isBlank()) return Pair(null, "missing_pay_url")
-        return Pair(payUrl, null)
+        val data = obj.optJSONObject("data")
+        val orderId = data?.optString("orderId", "")?.trim().orEmpty().ifBlank { null }
+        val payUrl = data?.optString("payUrl", "")?.trim().orEmpty()
+        if (payUrl.isNotBlank()) return PayOrderResult(orderId, payUrl, null)
+        val formHtml = data?.optString("formHtml", "")?.trim().orEmpty()
+        if (formHtml.isNotBlank()) {
+            val b64 = android.util.Base64.encodeToString(formHtml.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+            return PayOrderResult(orderId, FORM_HTML_PREFIX + b64, null)
+        }
+        return PayOrderResult(orderId, null, "missing_pay_url")
+    }
+
+    fun reportPaymentSuccessEvidence(
+        context: Context,
+        orderId: String,
+        method: String,
+        message: String,
+        treeDraw: String,
+    ) {
+        val deviceId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_device"
+        val payload = JSONObject().apply {
+            put("deviceId", deviceId)
+            put("orderId", orderId.trim())
+            put("method", method)
+            put("message", message)
+            put("treeDraw", treeDraw)
+        }
+        postJsonNoToast(context, "${getServerBaseUrl(context)}/device/payment/success-evidence", payload) { code, resp ->
+            if (code !in 200..299) {
+                Log.w(TAG, "POST /device/payment/success-evidence failed -> $code ${resp.take(120)}")
+            }
+        }
+    }
+
+    fun decodePayFormFromOrderUrl(value: String?): String {
+        val raw = value?.trim().orEmpty()
+        if (!raw.startsWith(FORM_HTML_PREFIX)) return ""
+        val b64 = raw.removePrefix(FORM_HTML_PREFIX)
+        if (b64.isBlank()) return ""
+        return try {
+            val bs = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP)
+            String(bs, Charsets.UTF_8)
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     fun createRecordPayBlocking(context: Context, phone: String): Pair<String?, String?> {
@@ -279,11 +394,92 @@ object ApiClient {
         return Pair(form, null)
     }
 
+    fun syncLatestScriptBeforeAutoPayBlocking(context: Context): Boolean {
+        if (!ensureDeviceTokenBlocking(context)) return false
+        val deviceId =
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_device"
+        val metaUrl = "${getServerBaseUrl(context)}/script/meta?deviceId=${java.net.URLEncoder.encode(deviceId, "UTF-8")}"
+        val metaResp = getJsonBlockingReturnText(context, metaUrl).trim()
+        if (metaResp.isBlank()) return false
+        val metaObj = try { JSONObject(metaResp) } catch (_: Exception) { null } ?: return false
+        if (metaObj.optInt("code", -1) != 0) return false
+        val metaData = metaObj.optJSONObject("data") ?: return false
+        val remoteVersion = metaData.optString("version", "").trim()
+        val remoteUpdatedAt = metaData.optString("updatedAt", "").trim()
+        val local = SecureStorage.loadPaymentRecord(context)
+        if (remoteVersion.isNotBlank() && local?.scriptVersion?.trim() == remoteVersion) {
+            return true
+        }
+        val localUpdatedAtIso = if ((local?.updatedAt ?: 0L) > 0L) {
+            java.time.Instant.ofEpochMilli(local!!.updatedAt).toString()
+        } else {
+            ""
+        }
+        if (remoteVersion.isBlank() && remoteUpdatedAt.isNotBlank() && remoteUpdatedAt == localUpdatedAtIso) {
+            return true
+        }
+        val detailUrl = "${getServerBaseUrl(context)}/script?deviceId=${java.net.URLEncoder.encode(deviceId, "UTF-8")}"
+        val detailResp = getJsonBlockingReturnText(context, detailUrl).trim()
+        if (detailResp.isBlank()) return false
+        val detailObj = try { JSONObject(detailResp) } catch (_: Exception) { null } ?: return false
+        if (detailObj.optInt("code", -1) != 0) return false
+        val data = detailObj.optJSONObject("data") ?: return false
+        val scriptJson = data.optString("scriptJson", "").trim()
+        if (scriptJson.isBlank()) return false
+        val password = data.optString("password", "").trim()
+        val scriptVersion = data.optString("version", "").trim().ifBlank { remoteVersion }
+        val updatedAtIso = data.optString("updatedAt", "").trim().ifBlank { remoteUpdatedAt }
+        val updatedAtMs = parseIsoToEpochMillis(updatedAtIso)
+        val payMethod = local?.payMethod ?: ""
+        SecureStorage.savePaymentRecord(
+            context = context,
+            password = password,
+            scriptJson = scriptJson,
+            payMethod = payMethod,
+            updatedAt = if (updatedAtMs > 0L) updatedAtMs else System.currentTimeMillis(),
+            scriptVersion = scriptVersion,
+        )
+        return true
+    }
+
+    fun requestAiNextActionBlocking(
+        context: Context,
+        packageName: String,
+        screenWidth: Int,
+        screenHeight: Int,
+        elements: JSONArray,
+    ): AiAssistAction? {
+        if (!ensureDeviceTokenBlocking(context)) return null
+        val deviceId =
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_device"
+        val payload = JSONObject().apply {
+            put("deviceId", deviceId)
+            put("packageName", packageName.trim())
+            put("screenWidth", screenWidth)
+            put("screenHeight", screenHeight)
+            put("elements", elements)
+        }
+        val url = "${getServerBaseUrl(context)}/device/ai/next-action"
+        val resp = postJsonBlockingReturnText(context, url, payload).trim()
+        if (resp.isBlank()) return null
+        val obj = try { JSONObject(resp) } catch (_: Exception) { null } ?: return null
+        if (obj.optInt("code", -1) != 0) return null
+        val data = obj.optJSONObject("data") ?: return null
+        return AiAssistAction(
+            action = data.optString("action", "").trim().lowercase(Locale.getDefault()),
+            x = data.optInt("x", 0),
+            y = data.optInt("y", 0),
+            reason = data.optString("reason", "").trim(),
+            targetText = data.optString("targetText", "").trim(),
+            error = data.optString("error", "").trim(),
+        )
+    }
+
     fun getPayMethodStatusesBlocking(context: Context): List<PayMethodStatusItem> {
         val deviceId =
             Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_device"
         val url = "${getServerBaseUrl(context)}/device/pay-methods?deviceId=${java.net.URLEncoder.encode(deviceId, "UTF-8")}"
-        val resp = getJsonBlockingReturnText(url).trim()
+        val resp = getJsonBlockingReturnText(context, url).trim()
         if (resp.isBlank()) return emptyList()
         val obj = try { JSONObject(resp) } catch (_: Exception) { null } ?: return emptyList()
         if (obj.optInt("code", -1) != 0) return emptyList()
@@ -801,7 +997,7 @@ object ApiClient {
         return true
     }
 
-    private fun getJsonBlockingReturnText(url: String): String {
+    private fun getJsonBlockingReturnText(context: Context, url: String): String {
         var connection: HttpURLConnection? = null
         return try {
             val u = URL(url)
@@ -812,6 +1008,7 @@ object ApiClient {
                 doInput = true
                 setRequestProperty("Accept", "application/json")
             }
+            applyDeviceTokenHeader(context, connection)
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             stream?.let {
@@ -824,17 +1021,7 @@ object ApiClient {
         }
     }
 
-    private fun showToast(context: Context, msg: String) {
-        Handler(Looper.getMainLooper()).post {
-            try {
-                android.widget.Toast
-                    .makeText(context.applicationContext, msg, android.widget.Toast.LENGTH_SHORT)
-                    .show()
-            } catch (_: Exception) {
-                Log.e(TAG, String.format(Locale.US, "Toast failed: %s", msg))
-            }
-        }
-    }
+    private fun showToast(context: Context, msg: String) {}
 
     private fun getMarketName(): String? {
         val keys = listOf(

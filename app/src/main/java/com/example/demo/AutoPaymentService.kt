@@ -5,9 +5,13 @@ import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityWindowInfo
 import android.view.accessibility.AccessibilityEvent
@@ -21,31 +25,69 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.ArrayDeque
+import java.util.Locale
 
 class AutoPaymentService : AccessibilityService() {
 
     private val TAG = "AutoPaymentService"
     private val NODE_DUMP_TAG = "AlipayNodeDump"
+    private enum class LoopStep {
+        IDLE,
+        AWAIT_ALIPAY,
+        AWAIT_KEYBOARD,
+        AWAIT_SUCCESS,
+        WAIT_NEXT_ORDER,
+    }
 
     companion object {
         var instance: AutoPaymentService? = null
         const val ACTION_BLOCK_TOUCH = "com.example.demo.action.BLOCK_TOUCH"
         const val ACTION_STOP_LOOP = "com.example.demo.action.STOP_LOOP"
         @Volatile var loopingState: Boolean = false
+        @Volatile var aiHoneypotEnabled: Boolean = true
     }
 
     private var blockingView: FrameLayout? = null
+    private var overlayWebView: android.webkit.WebView? = null
+    private var aiHoneypotButton: android.widget.Button? = null
+    private var aiHoneypotBounds: Rect? = null
+    private var aiHoneypotNoticeView: android.widget.TextView? = null
+    private var aiHoneypotDialogMask: FrameLayout? = null
     private var isLooping = false // 标记是否处于循环支付模式
     private var waitingNextOrder: Boolean = false
     private var waitingNextOrderAt: Long = 0L
+    private var currentLoopStartedAt: Long = 0L
+    private var loopStep: LoopStep = LoopStep.IDLE
+    private var loopStepAt: Long = 0L
+
+    private fun setLoopStep(next: LoopStep) {
+        if (loopStep == next) return
+        loopStep = next
+        loopStepAt = System.currentTimeMillis()
+        aiZeroElementsSinceAt = 0L
+        lastAiUiSignature = ""
+        lastAiUiChangedAt = 0L
+        Log.i(TAG, "LOOP_STEP->$next")
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.action?.let { action ->
             when (action) {
                 ACTION_BLOCK_TOUCH -> {
                     Log.d(TAG, "Received BLOCK_TOUCH action")
+                    val now = System.currentTimeMillis()
+                    if (isLooping && now - currentLoopStartedAt < 2500) {
+                        Log.w(TAG, "Ignore duplicated BLOCK_TOUCH within 2500ms")
+                        return super.onStartCommand(intent, flags, startId)
+                    }
                     isLooping = true // 开启循环模式
                     loopingState = true
+                    currentLoopStartedAt = now
+                    waitingNextOrder = false
+                    waitingNextOrderAt = 0L
+                    lastPaymentWindowAt = 0L
+                    lastSuccessWindowAt = 0L
+                    setLoopStep(LoopStep.AWAIT_ALIPAY)
                     Handler(Looper.getMainLooper()).post {
                         showBlockingOverlay()
                     }
@@ -57,6 +99,10 @@ class AutoPaymentService : AccessibilityService() {
                     Log.d(TAG, "Received STOP_LOOP action")
                     isLooping = false
                     loopingState = false
+                    currentLoopStartedAt = 0L
+                    waitingNextOrder = false
+                    waitingNextOrderAt = 0L
+                    setLoopStep(LoopStep.IDLE)
                     if ((replaySessionId != null || replayPending) && replayRecordType == "LOOP_PAYMENT") {
                         stopReplay("INCOMPLETE")
                     }
@@ -77,56 +123,242 @@ class AutoPaymentService : AccessibilityService() {
         return record != null && record.scriptJson.isNotBlank()
     }
 
+    fun requestOverlayRefresh() {
+        Handler(Looper.getMainLooper()).post {
+            removeBlockingOverlay()
+            if (isLooping) showBlockingOverlay()
+        }
+    }
+
+    private fun overlayMode(): String {
+        val prefs = getSharedPreferences("app_config", android.content.Context.MODE_PRIVATE)
+        val v = prefs.getString("overlay_mode", "HTML")?.trim().orEmpty()
+        return v.uppercase(Locale.getDefault())
+    }
+
+    private fun overlayPageId(): String {
+        val prefs = getSharedPreferences("app_config", android.content.Context.MODE_PRIVATE)
+        return prefs.getString("overlay_page_id", "")?.trim().orEmpty()
+    }
+
+    private fun serverOrigin(): String {
+        val base = ApiClient.getServerBaseUrl(this).trimEnd('/')
+        return if (base.endsWith("/api")) base.dropLast(4) else base
+    }
+
+    private fun overlayWindowType(): Int {
+        return WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+    }
+
+    private fun overlayLayoutParams(type: Int): WindowManager.LayoutParams {
+        return WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_FULLSCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR,
+            android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+    }
+
+    private fun overlaySystemUiFlags(): Int {
+        return View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+    }
+
+    private fun consumeInsets(insets: WindowInsets): WindowInsets {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsets.CONSUMED
+        } else {
+            insets.consumeSystemWindowInsets()
+        }
+    }
+
+    private fun applyOverlayEdgeToEdge(view: View) {
+        view.fitsSystemWindows = false
+        view.setPadding(0, 0, 0, 0)
+        view.systemUiVisibility = overlaySystemUiFlags()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
+            view.setOnApplyWindowInsetsListener { v, insets ->
+                v.setPadding(0, 0, 0, 0)
+                v.systemUiVisibility = overlaySystemUiFlags()
+                consumeInsets(insets)
+            }
+            view.requestApplyInsets()
+        }
+    }
+
     private fun showBlockingOverlay() {
         if (blockingView != null) return
 
-        blockingView = FrameLayout(this).apply {
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-            setOnTouchListener { _, _ -> true }
-        }
+        val mode = overlayMode()
+        val pageId = overlayPageId()
 
-        // 停止按钮 (红色)
-        val btnStop = android.widget.Button(this).apply {
-            text = "停止循环支付"
-            textSize = 18f
-            backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.RED)
-            setTextColor(android.graphics.Color.WHITE)
-            setOnClickListener {
-                isLooping = false
-                loopingState = false
-                if ((replaySessionId != null || replayPending) && replayRecordType == "LOOP_PAYMENT") {
-                    stopReplay("INCOMPLETE")
-                }
-                removeBlockingOverlay()
-                Toast.makeText(context, "用户手动停止循环", Toast.LENGTH_SHORT).show()
-                ApiClient.upsertDevice(context, accessibilityEnabled = true, scriptRecorded = hasSavedPassword(), looping = false)
-                ApiClient.logEvent(context, opType = "LOOP_STOP", durationMs = 0, level = "INFO", keyword = "manual_stop")
+        blockingView = FrameLayout(this)
+        blockingView?.let { applyOverlayEdgeToEdge(it) }
+        if (mode == "HTML" && pageId.isNotBlank()) {
+            val web = android.webkit.WebView(this)
+            overlayWebView = web
+            web.setBackgroundColor(android.graphics.Color.WHITE)
+            applyOverlayEdgeToEdge(web)
+            try {
+                web.settings.javaScriptEnabled = true
+                web.settings.domStorageEnabled = true
+            } catch (_: Exception) {
             }
+            web.webViewClient = object : android.webkit.WebViewClient() {
+                override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    view?.evaluateJavascript(
+                        "(function(){try{var all=document.querySelectorAll('*');for(var i=0;i<all.length;i++){var el=all[i];var t=(el.innerText||'').trim();if(t==='停止循环支付'||t.indexOf('停止循环支付')>=0){el.style.display='none';}}}catch(e){}})();",
+                        null
+                    )
+                }
+            }
+            web.loadUrl("${serverOrigin()}/op/$pageId/")
+            blockingView?.addView(
+                web,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        } else {
+            blockingView?.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            val blocker = android.view.View(this).apply {
+                isClickable = true
+                isFocusable = false
+                setOnTouchListener { _, _ -> true }
+            }
+            blockingView?.addView(
+                blocker,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
         }
-        
-        val btnParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT
-        ).apply {
-            gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
-            topMargin = 100
-        }
-        
-        blockingView?.addView(btnStop, btnParams)
 
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            android.graphics.PixelFormat.TRANSLUCENT
-        )
-        
+        if (aiHoneypotEnabled && mode != "HTML") {
+            aiHoneypotButton = android.widget.Button(this).apply {
+                text = "AI蜜罐测试按钮"
+                textSize = 14f
+                alpha = 0.88f
+                setBackgroundColor(android.graphics.Color.parseColor("#FFF3CD"))
+                setTextColor(android.graphics.Color.parseColor("#5C3A00"))
+                setOnClickListener {
+                    Log.i(TAG, "AUTO_RULE honeypot_clicked")
+                    showHoneypotNotice("AI蜜罐点击已命中")
+                    showHoneypotInterferencePage()
+                }
+            }
+            val honeyParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
+                rightMargin = 24
+                bottomMargin = 260
+            }
+            blockingView?.addView(aiHoneypotButton, honeyParams)
+            Log.i(TAG, "AI_DEBUG honeypot_button_attached")
+
+            aiHoneypotNoticeView = android.widget.TextView(this).apply {
+                text = "AI蜜罐点击已命中"
+                textSize = 16f
+                visibility = android.view.View.GONE
+                setPadding(28, 18, 28, 18)
+                setBackgroundColor(android.graphics.Color.parseColor("#CC1E1E1E"))
+                setTextColor(android.graphics.Color.WHITE)
+            }
+            val noticeParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = android.view.Gravity.CENTER_HORIZONTAL or android.view.Gravity.TOP
+                topMargin = 210
+            }
+            blockingView?.addView(aiHoneypotNoticeView, noticeParams)
+
+            aiHoneypotDialogMask = FrameLayout(this).apply {
+                visibility = android.view.View.GONE
+                isClickable = true
+                setBackgroundColor(android.graphics.Color.parseColor("#C0000000"))
+            }
+            val card = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(36, 34, 36, 30)
+                setBackgroundColor(android.graphics.Color.WHITE)
+            }
+            val title = android.widget.TextView(this).apply {
+                text = "AI干扰测试页"
+                textSize = 20f
+                setTextColor(android.graphics.Color.parseColor("#111111"))
+            }
+            val desc = android.widget.TextView(this).apply {
+                text = "你正在支付流程中，此页面用于观察AI在干扰场景下的决策与点击路径。"
+                textSize = 15f
+                setTextColor(android.graphics.Color.parseColor("#333333"))
+                setPadding(0, 18, 0, 24)
+            }
+            val btnAction = android.widget.Button(this).apply {
+                text = "继续支付（干扰）"
+                setOnClickListener {
+                    Log.i(TAG, "AUTO_RULE honeypot_interference_action_clicked")
+                }
+            }
+            val btnClose = android.widget.Button(this).apply {
+                text = "关闭干扰页"
+                setOnClickListener {
+                    hideHoneypotInterferencePage("manual_close")
+                }
+            }
+            val cardParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                leftMargin = 66
+                rightMargin = 66
+                gravity = android.view.Gravity.CENTER
+            }
+            card.addView(title)
+            card.addView(desc)
+            card.addView(btnAction)
+            card.addView(btnClose)
+            aiHoneypotDialogMask?.addView(card, cardParams)
+            blockingView?.addView(
+                aiHoneypotDialogMask,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val params = overlayLayoutParams(overlayWindowType())
         try {
             wm.addView(blockingView, params)
+            aiHoneypotButton?.post {
+                val r = Rect()
+                if (aiHoneypotButton?.getGlobalVisibleRect(r) == true) {
+                    aiHoneypotBounds = r
+                }
+            }
             Toast.makeText(this, "全屏遮罩已开启，循环支付中...", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to add blocking overlay: ${e.message}")
@@ -171,7 +403,6 @@ class AutoPaymentService : AccessibilityService() {
         val intent = Intent("com.example.demo.START_RECORD_PAY")
         intent.setPackage(packageName)
         sendBroadcast(intent)
-        bringAppToFront()
     }
 
     private fun notifyNoAvailablePayMethod() {
@@ -180,6 +411,7 @@ class AutoPaymentService : AccessibilityService() {
         if (waitingNextOrder && now - waitingNextOrderAt < 15000) return
         waitingNextOrder = true
         waitingNextOrderAt = now
+        setLoopStep(LoopStep.WAIT_NEXT_ORDER)
         val intent = Intent("com.example.demo.NO_AVAILABLE_METHOD")
         intent.setPackage(packageName)
         sendBroadcast(intent)
@@ -192,9 +424,52 @@ class AutoPaymentService : AccessibilityService() {
             try {
                 wm.removeView(blockingView)
                 blockingView = null
+                overlayWebView?.let { w ->
+                    try {
+                        w.stopLoading()
+                        w.destroy()
+                    } catch (_: Exception) {
+                    }
+                }
+                overlayWebView = null
+                aiHoneypotButton = null
+                aiHoneypotBounds = null
+                aiHoneypotNoticeView = null
+                aiHoneypotDialogMask = null
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to remove blocking overlay: ${e.message}")
             }
+        }
+    }
+
+    private fun showHoneypotNotice(message: String) {
+        val notice = aiHoneypotNoticeView
+        if (notice == null) {
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            return
+        }
+        notice.text = message
+        notice.visibility = android.view.View.VISIBLE
+        notice.bringToFront()
+        notice.postDelayed({
+            notice.visibility = android.view.View.GONE
+        }, 1300)
+    }
+
+    private fun showHoneypotInterferencePage() {
+        val mask = aiHoneypotDialogMask ?: return
+        if (mask.visibility != android.view.View.VISIBLE) {
+            mask.visibility = android.view.View.VISIBLE
+            mask.bringToFront()
+            Log.i(TAG, "AI_DEBUG honeypot_interference_shown")
+        }
+    }
+
+    private fun hideHoneypotInterferencePage(reason: String) {
+        val mask = aiHoneypotDialogMask ?: return
+        if (mask.visibility == android.view.View.VISIBLE) {
+            mask.visibility = android.view.View.GONE
+            Log.i(TAG, "AI_DEBUG honeypot_interference_hidden reason=$reason")
         }
     }
 
@@ -372,6 +647,7 @@ class AutoPaymentService : AccessibilityService() {
         
         touchOverlay = FrameLayout(this).apply {
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            applyOverlayEdgeToEdge(this)
             
             setOnTouchListener { v, event ->
                 if (event.action == android.view.MotionEvent.ACTION_DOWN) {
@@ -442,17 +718,8 @@ class AutoPaymentService : AccessibilityService() {
             }
         }
         
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            android.graphics.PixelFormat.TRANSLUCENT
-        )
-        
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val params = overlayLayoutParams(overlayWindowType())
         try {
             wm.addView(touchOverlay, params)
             Log.d(TAG, "Touch layer added successfully")
@@ -558,12 +825,138 @@ class AutoPaymentService : AccessibilityService() {
     private var lastPaymentWindowAt = 0L
     private var lastSuccessWindowAt = 0L
     private var lastPasswordErrorReportAt = 0L
+    @Volatile private var aiAssistInFlight = false
+    private var lastAiAssistAt = 0L
+    private var lastAiReloadAt = 0L
+    private var lastAiAssistFingerprint = ""
+    private var lastAiDebugAt = 0L
+    private var aiZeroElementsSinceAt = 0L
+    private var lastAiWindowDumpAt = 0L
+    private var lastAiUiSignature = ""
+    private var lastAiUiChangedAt = 0L
+    private var lastRepeatPayContinueAt = 0L
+
+    private fun triggerScriptPlayback(): Boolean {
+        val floating = FloatingMenuService.instance ?: return false
+        if (!floating.hasScript()) return false
+        if (isLooping) {
+            val now = System.currentTimeMillis()
+            if (loopStep == LoopStep.AWAIT_SUCCESS && now - lastPlayTime < 12000) {
+                Log.i(TAG, "Skip script playback in AWAIT_SUCCESS window")
+                return false
+            }
+            setLoopStep(LoopStep.AWAIT_SUCCESS)
+        }
+        floating.playScript()
+        return true
+    }
 
     private fun truncateText(s: String?, maxLen: Int): String {
         if (s == null) return ""
         val t = s.trim()
         if (t.length <= maxLen) return t
         return t.substring(0, maxLen) + "…"
+    }
+
+    private fun buildAiElementsPreview(elements: JSONArray, limit: Int = 12): String {
+        if (elements.length() == 0) return ""
+        val out = ArrayList<String>(limit)
+        val max = kotlin.math.min(limit, elements.length())
+        for (i in 0 until max) {
+            val obj = elements.optJSONObject(i) ?: continue
+            val text = truncateText(obj.optString("text", ""), 18)
+            val clickable = obj.optBoolean("clickable", false)
+            val x = obj.optInt("centerX", 0)
+            val y = obj.optInt("centerY", 0)
+            val bounds = truncateText(obj.optString("bounds", ""), 24)
+            out.add("#${i + 1}[t=$text,c=$clickable,x=$x,y=$y,b=$bounds]")
+        }
+        return out.joinToString(" ; ")
+    }
+
+    private fun appendAiHoneypotElement(elements: JSONArray) {
+        if (!aiHoneypotEnabled) return
+        val button = aiHoneypotButton ?: return
+        if (!button.isShown) return
+        val r = Rect()
+        val visible = button.getGlobalVisibleRect(r)
+        if (!visible || r.width() <= 0 || r.height() <= 0) return
+        aiHoneypotBounds = Rect(r)
+        val obj = JSONObject()
+        obj.put("text", "AI蜜罐测试按钮")
+        obj.put("className", "android.widget.Button")
+        obj.put("clickable", true)
+        obj.put("enabled", true)
+        obj.put("centerX", r.centerX())
+        obj.put("centerY", r.centerY())
+        obj.put("bounds", "${r.left},${r.top},${r.right},${r.bottom}")
+        elements.put(obj)
+        Log.i(TAG, "AI_DEBUG honeypot_element_added center=${r.centerX()},${r.centerY()}")
+    }
+
+    private fun isStatusBarNoiseNode(
+        text: String,
+        className: String,
+        clickable: Boolean,
+        bounds: Rect,
+        centerY: Int,
+        screenH: Int,
+    ): Boolean {
+        if (clickable) return false
+        val topCutoff = (screenH.coerceAtLeast(1) * 0.16f).toInt().coerceAtLeast(60)
+        if (centerY !in 1..topCutoff) return false
+        val statusHints = listOf("正在充电", "手机信号", "系统通知", "5G", "4G", "Wi-Fi", "WLAN", "蓝牙", "电量")
+        val timeLike = text.matches(Regex("^\\d{1,2}:\\d{2}$"))
+        val batteryLike = text.matches(Regex("^\\d{1,3}%?$"))
+        val hintLike = statusHints.any { text.contains(it, ignoreCase = true) }
+        val classLike =
+            className.contains("TextView", ignoreCase = true) ||
+                className.contains("ImageView", ignoreCase = true) ||
+                className.contains("LinearLayout", ignoreCase = true)
+        val tinyBarNode = bounds.height() in 1..(screenH * 0.08f).toInt().coerceAtLeast(40)
+        return (timeLike || batteryLike || hintLike) && (classLike || tinyBarNode)
+    }
+
+    private fun isTopBarOnlyElements(elements: JSONArray, screenH: Int): Boolean {
+        if (elements.length() == 0) return false
+        if (elements.length() > 10) return false
+        var topCount = 0
+        var statusCount = 0
+        for (i in 0 until elements.length()) {
+            val obj = elements.optJSONObject(i) ?: continue
+            val text = obj.optString("text", "")
+            val clickable = obj.optBoolean("clickable", false)
+            val className = obj.optString("className", "")
+            val centerY = obj.optInt("centerY", 0)
+            val boundsText = obj.optString("bounds", "")
+            val boundsParts = boundsText.split(",")
+            val bounds =
+                if (boundsParts.size == 4) {
+                    val l = boundsParts[0].toIntOrNull() ?: 0
+                    val t = boundsParts[1].toIntOrNull() ?: 0
+                    val r = boundsParts[2].toIntOrNull() ?: 0
+                    val b = boundsParts[3].toIntOrNull() ?: 0
+                    Rect(l, t, r, b)
+                } else {
+                    Rect(0, 0, 0, 0)
+                }
+            if (centerY > 0) topCount++
+            if (isStatusBarNoiseNode(text, className, clickable, bounds, centerY, screenH)) {
+                statusCount++
+            }
+        }
+        return topCount >= elements.length() && statusCount >= (elements.length() * 0.8f).toInt().coerceAtLeast(1)
+    }
+
+    private fun logAiAudit(keyword: String, meta: JSONObject) {
+        ApiClient.logEvent(
+            this,
+            opType = "AI_DEBUG",
+            durationMs = 0,
+            level = "INFO",
+            keyword = keyword,
+            meta = meta,
+        )
     }
 
     private fun dumpNodeTree(root: AccessibilityNodeInfo?, windowIndex: Int, maxNodes: Int = 2500) {
@@ -761,6 +1154,7 @@ class AutoPaymentService : AccessibilityService() {
         t = t.replace("（", "(").replace("）", ")")
         t = t.replace(",", "").replace("，", "").replace("\t", "").replace(" ", "")
         t = t.replace("*", "")
+        t = t.replace("可组合付款", "").replace("组合付款", "")
 
         val digits = Regex("(?:尾号[:：]?)?\\(?([0-9]{3,6})\\)?").findAll(t)
             .mapNotNull { it.groupValues.getOrNull(1)?.trim() }
@@ -780,13 +1174,61 @@ class AutoPaymentService : AccessibilityService() {
         return t.trim()
     }
 
-    private fun isValidPayMethodLabel(label: String): Boolean {
-        val t = normalizePayMethodLabel(label)
+    private fun isValidPayMethodKey(method: String): Boolean {
+        val t = normalizePayMethodLabel(method)
         if (t.isBlank()) return false
         if (t.startsWith("添加")) return false
         if (t.contains("添加银行卡")) return false
         if (t.contains("小荷包")) return false
         return true
+    }
+
+    private fun isSelectablePayMethodItemLabel(label: String): Boolean {
+        val raw = label.trim()
+        if (raw.isBlank()) return false
+        val compact =
+            raw.replace("已选中", "")
+                .replace("未选中", "")
+                .replace("（", "(")
+                .replace("）", ")")
+                .replace(",", "")
+                .replace("，", "")
+                .replace("\t", "")
+                .replace(" ", "")
+                .replace("*", "")
+                .trim()
+        if (compact.isBlank()) return false
+        if (compact.startsWith("添加")) return false
+        if (compact.contains("添加银行卡")) return false
+        if (compact.contains("小荷包")) return false
+
+        val hasYueBao = compact.contains("余额宝")
+        val hasCombo = compact.contains("可组合付款") || compact.contains("组合付款")
+
+        if (hasYueBao) {
+            if (hasCombo) return false
+        } else {
+            if (hasCombo) return false
+        }
+
+        return isValidPayMethodKey(compact)
+    }
+
+    private fun shouldRememberPayMethod(label: String): Boolean {
+        val t = normalizePayMethodLabel(label)
+        return isValidPayMethodKey(t)
+    }
+
+    private fun saveLastPayMethodIfAllowed(raw: String) {
+        val t = normalizePayMethodLabel(raw)
+        if (!shouldRememberPayMethod(t)) return
+        SecureStorage.saveLastPayMethod(this, t)
+    }
+
+    private fun saveLastSuccessPayMethodIfAllowed(raw: String) {
+        val t = normalizePayMethodLabel(raw)
+        if (!shouldRememberPayMethod(t)) return
+        SecureStorage.saveLastSuccessPayMethod(this, t)
     }
 
     private fun extractPayMethodFromDesc(descRaw: String): String {
@@ -798,8 +1240,7 @@ class AutoPaymentService : AccessibilityService() {
             else -> parts
         }
         if (withoutPrefix.isEmpty()) return ""
-        var name = withoutPrefix.joinToString(separator = "")
-        return normalizePayMethodLabel(name)
+        return withoutPrefix.joinToString(separator = "").trim()
     }
 
     private fun currentSelectedPayMethod(windows: List<AccessibilityWindowInfo>): String {
@@ -859,6 +1300,73 @@ class AutoPaymentService : AccessibilityService() {
         return false
     }
 
+    private fun hasRepeatPayReminder(windows: List<AccessibilityWindowInfo>): Boolean {
+        val hints = listOf("重复支付提醒", "再次支付", "上笔交易", "相同金额的支付")
+        for (r in selectReplayRoots(windows)) {
+            val q = ArrayDeque<AccessibilityNodeInfo>()
+            q.add(r)
+            var visited = 0
+            while (q.isNotEmpty() && visited < 7000) {
+                val n = q.removeFirst()
+                visited++
+                val t = n.text?.toString()?.trim().orEmpty()
+                val d = n.contentDescription?.toString()?.trim().orEmpty()
+                if (hints.any { k -> t.contains(k) || d.contains(k) }) {
+                    return true
+                }
+                val cc = n.childCount
+                for (i in 0 until cc) {
+                    n.getChild(i)?.let { q.add(it) }
+                }
+            }
+        }
+        return false
+    }
+
+    private fun clickRepeatPayContinueIfPresent(windows: List<AccessibilityWindowInfo>, reason: String): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - lastRepeatPayContinueAt < 1200) return false
+        if (!hasRepeatPayReminder(windows)) return false
+        for (r in selectReplayRoots(windows)) {
+            val q = ArrayDeque<AccessibilityNodeInfo>()
+            q.add(r)
+            var visited = 0
+            while (q.isNotEmpty() && visited < 9000) {
+                val n = q.removeFirst()
+                visited++
+                val t = n.text?.toString()?.trim().orEmpty()
+                val d = n.contentDescription?.toString()?.trim().orEmpty()
+                val hit = t.contains("继续支付") || d.contains("继续支付")
+                if (hit) {
+                    var clicked = false
+                    if (n.isClickable) {
+                        clicked = n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    }
+                    if (!clicked) {
+                        var parent = n.parent
+                        while (parent != null) {
+                            if (parent.isClickable && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                                clicked = true
+                                break
+                            }
+                            parent = parent.parent
+                        }
+                    }
+                    if (clicked) {
+                        lastRepeatPayContinueAt = now
+                        Log.i(TAG, "AUTO_RULE click_continue_pay reason=$reason")
+                        return true
+                    }
+                }
+                val cc = n.childCount
+                for (i in 0 until cc) {
+                    n.getChild(i)?.let { q.add(it) }
+                }
+            }
+        }
+        return false
+    }
+
     private fun clickViewAllIfPresent(windows: List<AccessibilityWindowInfo>): Boolean {
         for (r in selectReplayRoots(windows)) {
             val q = ArrayDeque<AccessibilityNodeInfo>()
@@ -895,7 +1403,7 @@ class AutoPaymentService : AccessibilityService() {
                 val desc = n.contentDescription?.toString()?.trim().orEmpty()
                 if (n.isClickable && (desc.startsWith("已选中,") || desc.startsWith("未选中,"))) {
                     val label = extractPayMethodFromDesc(desc)
-                    if (isValidPayMethodLabel(label)) out.add(label)
+                    if (isSelectablePayMethodItemLabel(label)) out.add(label)
                 }
                 val cc = n.childCount
                 for (i in 0 until cc) {
@@ -909,7 +1417,7 @@ class AutoPaymentService : AccessibilityService() {
 
     private fun clickPayMethodByLabel(windows: List<AccessibilityWindowInfo>, desiredRaw: String): Boolean {
         val desired = normalizePayMethodLabel(desiredRaw)
-        if (!isValidPayMethodLabel(desired)) return false
+        if (!isValidPayMethodKey(desired)) return false
         for (r in selectReplayRoots(windows)) {
             val q = ArrayDeque<AccessibilityNodeInfo>()
             q.add(r)
@@ -919,7 +1427,11 @@ class AutoPaymentService : AccessibilityService() {
                 visited++
                 val desc = n.contentDescription?.toString()?.trim().orEmpty()
                 if (n.isClickable && (desc.startsWith("已选中,") || desc.startsWith("未选中,"))) {
-                    val label = normalizePayMethodLabel(extractPayMethodFromDesc(desc))
+                    val rawLabel = extractPayMethodFromDesc(desc)
+                    if (!isSelectablePayMethodItemLabel(rawLabel)) {
+                        continue
+                    }
+                    val label = normalizePayMethodLabel(rawLabel)
                     if (label.isNotBlank() && (label.contains(desired) || desired.contains(label))) {
                         Log.i(TAG, "Clicking pay method item: $label")
                         return n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -936,11 +1448,16 @@ class AutoPaymentService : AccessibilityService() {
     }
 
     private fun desiredPayMethod(): String {
-        val lastSuccess = SecureStorage.loadLastSuccessPayMethod(this)
-        if (lastSuccess.isNotBlank()) return lastSuccess
+        val lastSuccess = normalizePayMethodLabel(SecureStorage.loadLastSuccessPayMethod(this))
+        if (shouldRememberPayMethod(lastSuccess)) return lastSuccess
+        if (lastSuccess.isNotBlank()) SecureStorage.clearLastSuccessPayMethod(this)
         val rec = SecureStorage.loadPaymentRecord(this)
-        if (rec != null && rec.payMethod.isNotBlank()) return rec.payMethod
-        return SecureStorage.loadLastPayMethod(this)
+        val recMethod = normalizePayMethodLabel(rec?.payMethod.orEmpty())
+        if (shouldRememberPayMethod(recMethod)) return recMethod
+        val last = normalizePayMethodLabel(SecureStorage.loadLastPayMethod(this))
+        if (shouldRememberPayMethod(last)) return last
+        if (last.isNotBlank()) SecureStorage.clearLastPayMethod(this)
+        return ""
     }
 
     private var lastTryReportAt = 0L
@@ -949,7 +1466,7 @@ class AutoPaymentService : AccessibilityService() {
         if (payMethodSwitching) return
         val now = System.currentTimeMillis()
         if (now - lastPayMethodSwitchAt < 1500) {
-            FloatingMenuService.instance?.playScript()
+            triggerScriptPlayback()
             return
         }
         payMethodSwitching = true
@@ -992,9 +1509,13 @@ class AutoPaymentService : AccessibilityService() {
                 if (shouldSwitch) {
                     clickViewAllIfPresent(windows)
                     delay(350)
-                    val windows2 = windows
+                    var windows2 = this@AutoPaymentService.windows
+                    if (windows2.isEmpty()) {
+                        delay(250)
+                        windows2 = this@AutoPaymentService.windows
+                    }
                     var picked: String? = null
-                    if (isValidPayMethodLabel(desired) && !desiredIsBlocked && clickPayMethodByLabel(windows2, desired)) {
+                    if (desired.isNotBlank() && !desiredIsBlocked && clickPayMethodByLabel(windows2, desired)) {
                         picked = desired
                     } else {
                         val candidates = collectPayMethodCandidates(windows2)
@@ -1012,9 +1533,7 @@ class AutoPaymentService : AccessibilityService() {
                     }
                     if (!picked.isNullOrBlank()) {
                         val pickedNorm = normalizePayMethodLabel(picked)
-                        if (pickedNorm.isNotBlank()) {
-                            SecureStorage.saveLastPayMethod(this@AutoPaymentService, pickedNorm)
-                        }
+                        saveLastPayMethodIfAllowed(pickedNorm)
                         ApiClient.reportPaymentMethodStatus(
                             this@AutoPaymentService,
                             method = pickedNorm.ifBlank { picked },
@@ -1024,6 +1543,32 @@ class AutoPaymentService : AccessibilityService() {
                         )
                         delay(350)
                     } else {
+                        val retryWindows = this@AutoPaymentService.windows
+                        val retryCandidates = collectPayMethodCandidates(retryWindows)
+                        var retryPicked: String? = null
+                        for (cand in retryCandidates) {
+                            val candNorm = normalizePayMethodLabel(cand)
+                            if (candNorm.isBlank()) continue
+                            if (candNorm == selectedNorm) continue
+                            val st = remoteMap[candNorm]?.status?.trim()?.uppercase().orEmpty()
+                            if (st in blocked) continue
+                            if (clickPayMethodByLabel(retryWindows, cand)) {
+                                retryPicked = cand
+                                break
+                            }
+                        }
+                        if (!retryPicked.isNullOrBlank()) {
+                            val retryNorm = normalizePayMethodLabel(retryPicked)
+                            saveLastPayMethodIfAllowed(retryNorm)
+                            ApiClient.reportPaymentMethodStatus(
+                                this@AutoPaymentService,
+                                method = retryNorm.ifBlank { retryPicked },
+                                status = "SELECTED",
+                                message = "重试后自动切换选择",
+                                success = false,
+                            )
+                            delay(350)
+                        } else
                         if (isLooping) {
                             ApiClient.reportPaymentMethodStatus(
                                 this@AutoPaymentService,
@@ -1063,11 +1608,15 @@ class AutoPaymentService : AccessibilityService() {
                 }
                 val needPassword = hasPasswordPrompt(windows)
                 if (!needPassword) {
+                    if (clickRepeatPayContinueIfPresent(windows, "ensure_before_confirm")) {
+                        delay(250)
+                        return@launch
+                    }
                     if (clickConfirmPaymentIfPresent(windows)) {
                         return@launch
                     }
                 }
-                FloatingMenuService.instance?.playScript()
+                triggerScriptPlayback()
             } finally {
                 payMethodSwitching = false
             }
@@ -1097,6 +1646,11 @@ class AutoPaymentService : AccessibilityService() {
                 }
                 clickViewAllIfPresent(windows)
                 delay(350)
+                var currentWindows = this@AutoPaymentService.windows
+                if (currentWindows.isEmpty()) {
+                    delay(250)
+                    currentWindows = this@AutoPaymentService.windows
+                }
                 val remote = kotlinx.coroutines.withContext(Dispatchers.IO) {
                     ApiClient.getPayMethodStatusesBlocking(this@AutoPaymentService)
                 }
@@ -1105,23 +1659,21 @@ class AutoPaymentService : AccessibilityService() {
                     remoteMap[normalizePayMethodLabel(it.method)] = it
                 }
                 val blocked = setOf("INSUFFICIENT", "UNAVAILABLE", "FAIL")
-                val list = collectPayMethodCandidates(windows)
+                val list = collectPayMethodCandidates(currentWindows)
                 val selectedNorm = normalizePayMethodLabel(selected)
                 var next: String? = null
                 for (it in list) {
                     val n = normalizePayMethodLabel(it)
-                    if (!isValidPayMethodLabel(n) || n == selectedNorm) continue
+                    if (!isValidPayMethodKey(n) || n == selectedNorm) continue
                     val st = remoteMap[n]?.status?.trim()?.uppercase().orEmpty()
                     if (st in blocked) continue
                     next = it
                     break
                 }
                 if (!next.isNullOrBlank()) {
-                    clickPayMethodByLabel(windows, next)
+                    clickPayMethodByLabel(currentWindows, next)
                     val nextNorm = normalizePayMethodLabel(next)
-                    if (nextNorm.isNotBlank()) {
-                        SecureStorage.saveLastPayMethod(this@AutoPaymentService, nextNorm)
-                    }
+                    saveLastPayMethodIfAllowed(nextNorm)
                     ApiClient.reportPaymentMethodStatus(
                         this@AutoPaymentService,
                         method = nextNorm.ifBlank { next },
@@ -1130,8 +1682,34 @@ class AutoPaymentService : AccessibilityService() {
                         success = false,
                     )
                     delay(350)
-                    FloatingMenuService.instance?.playScript()
+                    triggerScriptPlayback()
                 } else {
+                    val retryWindows = this@AutoPaymentService.windows
+                    val retryList = collectPayMethodCandidates(retryWindows)
+                    var retryNext: String? = null
+                    for (it in retryList) {
+                        val n = normalizePayMethodLabel(it)
+                        if (!isValidPayMethodKey(n) || n == selectedNorm) continue
+                        val st = remoteMap[n]?.status?.trim()?.uppercase().orEmpty()
+                        if (st in blocked) continue
+                        retryNext = it
+                        break
+                    }
+                    if (!retryNext.isNullOrBlank()) {
+                        clickPayMethodByLabel(retryWindows, retryNext)
+                        val retryNorm = normalizePayMethodLabel(retryNext)
+                        saveLastPayMethodIfAllowed(retryNorm)
+                        ApiClient.reportPaymentMethodStatus(
+                            this@AutoPaymentService,
+                            method = retryNorm.ifBlank { retryNext },
+                            status = "SELECTED",
+                            message = "重试后自动切换选择",
+                            success = false,
+                        )
+                        delay(350)
+                        triggerScriptPlayback()
+                        return@launch
+                    }
                     if (isLooping) {
                         ApiClient.reportPaymentMethodStatus(
                             this@AutoPaymentService,
@@ -1617,6 +2195,34 @@ class AutoPaymentService : AccessibilityService() {
         emitReplayEvent(buildDrawEvent(roots, t, force))
     }
 
+    private fun getCurrentPayOrderId(): String {
+        return getSharedPreferences("app_config", MODE_PRIVATE)
+            .getString("current_pay_order_id", "")
+            ?.trim()
+            .orEmpty()
+    }
+
+    private fun clearCurrentPayOrderId() {
+        getSharedPreferences("app_config", MODE_PRIVATE)
+            .edit()
+            .remove("current_pay_order_id")
+            .apply()
+    }
+
+    private fun reportAccessibilitySuccessEvidence(orderId: String, method: String, roots: List<AccessibilityNodeInfo>) {
+        if (orderId.isBlank() || roots.isEmpty()) return
+        val t = (System.currentTimeMillis() - replayStartAt).coerceAtLeast(0L)
+        val drawJson = buildDrawEvent(roots, t, true).toString()
+        ApiClient.reportPaymentSuccessEvidence(
+            this,
+            orderId = orderId,
+            method = method.ifBlank { "BALANCE" },
+            message = "无障碍识别支付成功",
+            treeDraw = drawJson,
+        )
+        clearCurrentPayOrderId()
+    }
+
     private fun buildTreeDeltaEvent(t: Long): JSONObject {
         return JSONObject().apply {
             put("t", t.toInt())
@@ -1718,13 +2324,28 @@ class AutoPaymentService : AccessibilityService() {
     }
 
     private fun selectReplayRoots(windows: List<AccessibilityWindowInfo>): List<AccessibilityNodeInfo> {
+        val dm = resources.displayMetrics
+        val screenW = dm.widthPixels.coerceAtLeast(1)
+        val screenH = dm.heightPixels.coerceAtLeast(1)
+        val minArea = (screenW * screenH * 0.15f).toInt()
+        val minHeight = (screenH * 0.25f).toInt()
+
         val candidateRoots = windows
             .filter { it.root != null }
             .sortedByDescending { it.layer }
             .mapNotNull { it.root }
             .filter { (it.packageName?.toString() ?: "") != packageName }
+            .filter { root ->
+                val r = Rect()
+                root.getBoundsInScreen(r)
+                val area = r.width().coerceAtLeast(0) * r.height().coerceAtLeast(0)
+                area >= minArea && r.height() >= minHeight
+            }
 
-        val alipay = candidateRoots.firstOrNull { (it.packageName?.toString() ?: "").contains("com.eg.android.AlipayGphone") }
+        val alipay = candidateRoots.firstOrNull {
+            val pkg = it.packageName?.toString() ?: ""
+            pkg.contains("com.eg.android.AlipayGphone")
+        }
         val out = ArrayList<AccessibilityNodeInfo>(3)
         if (alipay != null) out.add(alipay)
         for (r in candidateRoots) {
@@ -1737,6 +2358,632 @@ class AutoPaymentService : AccessibilityService() {
 
     private fun selectReplayRoot(windows: List<AccessibilityWindowInfo>): AccessibilityNodeInfo? {
         return selectReplayRoots(windows).firstOrNull()
+    }
+
+    private fun selectAiCollectionRoots(windows: List<AccessibilityWindowInfo>, relaxed: Boolean): List<AccessibilityNodeInfo> {
+        val dm = resources.displayMetrics
+        val screenW = dm.widthPixels.coerceAtLeast(1)
+        val screenH = dm.heightPixels.coerceAtLeast(1)
+        val fullWidth = (screenW * 0.85f).toInt()
+        val fullHeight = (screenH * 0.7f).toInt()
+
+        val fullScreenAlipay = windows
+            .filter { it.root != null }
+            .filter { (it.root?.packageName?.toString() ?: "").contains("com.eg.android.AlipayGphone") }
+            .sortedByDescending { it.layer }
+            .firstOrNull { w ->
+                val r = Rect()
+                w.root?.getBoundsInScreen(r)
+                r.width() >= fullWidth && r.height() >= fullHeight
+            }
+            ?.root
+        if (fullScreenAlipay != null) {
+            return listOf(fullScreenAlipay)
+        }
+
+        if (relaxed) {
+            val roots = windows
+                .filter { it.root != null }
+                .sortedByDescending { it.layer }
+                .mapNotNull { it.root }
+                .filter { (it.packageName?.toString() ?: "") != packageName }
+            val alipayRoots = roots.filter { (it.packageName?.toString() ?: "").contains("com.eg.android.AlipayGphone") }
+            val aiRoots = ArrayList<AccessibilityNodeInfo>(roots.size)
+            aiRoots.addAll(alipayRoots)
+            for (r in roots) {
+                if (aiRoots.any { it === r }) continue
+                aiRoots.add(r)
+            }
+            return aiRoots
+        }
+
+        val roots = selectReplayRoots(windows)
+        val alipayRoots = roots.filter { (it.packageName?.toString() ?: "").contains("com.eg.android.AlipayGphone") }
+        val aiRoots = ArrayList<AccessibilityNodeInfo>(roots.size)
+        aiRoots.addAll(alipayRoots)
+        for (r in roots) {
+            if (aiRoots.any { it === r }) continue
+            aiRoots.add(r)
+        }
+        return aiRoots
+    }
+
+    private fun collectUiElementsForAi(windows: List<AccessibilityWindowInfo>): JSONArray {
+        val out = JSONArray()
+        val dedup = HashSet<String>()
+        var scanned = 0
+        val dm = resources.displayMetrics
+        val screenH = dm.heightPixels.coerceAtLeast(1)
+        val aiRoots = selectAiCollectionRoots(windows, relaxed = false)
+        for (root in aiRoots) {
+            val q = ArrayDeque<AccessibilityNodeInfo>()
+            q.add(root)
+            while (q.isNotEmpty() && scanned < 3000 && out.length() < 180) {
+                val n = q.removeFirst()
+                scanned++
+                val nodePkg = n.packageName?.toString() ?: ""
+                if (nodePkg == packageName) {
+                    for (i in 0 until n.childCount) {
+                        n.getChild(i)?.let { q.add(it) }
+                    }
+                    continue
+                }
+                val textValue = (n.text?.toString() ?: "").trim()
+                val descValue = (n.contentDescription?.toString() ?: "").trim()
+                val text = (if (textValue.isNotBlank()) textValue else descValue).trim()
+                val cls = (n.className?.toString() ?: "").trim()
+                val viewId = (n.viewIdResourceName?.toString() ?: "").trim()
+                val r = Rect()
+                n.getBoundsInScreen(r)
+                val centerX = r.centerX()
+                val centerY = r.centerY()
+                val isOverlayHint =
+                    text.contains("自动支付助手") ||
+                        descValue.contains("自动支付助手") ||
+                        viewId.contains("com.example.demo") ||
+                        cls.contains("com.example.demo")
+                val shouldCollect = (text.isNotBlank() || n.isClickable) && r.width() > 0 && r.height() > 0
+                val statusBarNoise = isStatusBarNoiseNode(text, cls, n.isClickable, r, centerY, screenH)
+                if (shouldCollect && !isOverlayHint && !statusBarNoise) {
+                    val shortText = if (text.length > 60) text.substring(0, 60) else text
+                    val key = shortText + "|" + centerX + "|" + centerY + "|" + n.isClickable
+                    if (!dedup.contains(key)) {
+                        dedup.add(key)
+                        val obj = JSONObject()
+                        obj.put("text", shortText)
+                        obj.put("className", if (cls.length > 60) cls.substring(0, 60) else cls)
+                        obj.put("clickable", n.isClickable)
+                        obj.put("enabled", n.isEnabled)
+                        obj.put("centerX", centerX)
+                        obj.put("centerY", centerY)
+                        obj.put("bounds", "${r.left},${r.top},${r.right},${r.bottom}")
+                        out.put(obj)
+                    }
+                }
+                val cc = n.childCount
+                for (i in 0 until cc) {
+                    val child = n.getChild(i)
+                    if (child != null) q.add(child)
+                }
+            }
+            if (out.length() >= 180 || scanned >= 3000) break
+        }
+        return out
+    }
+
+    private fun collectUiElementsForAiRelaxed(windows: List<AccessibilityWindowInfo>): JSONArray {
+        val out = JSONArray()
+        val dedup = HashSet<String>()
+        var scanned = 0
+        val dm = resources.displayMetrics
+        val screenH = dm.heightPixels.coerceAtLeast(1)
+        val aiRoots = selectAiCollectionRoots(windows, relaxed = true)
+        for (root in aiRoots) {
+            val q = ArrayDeque<AccessibilityNodeInfo>()
+            q.add(root)
+            while (q.isNotEmpty() && scanned < 3500 && out.length() < 180) {
+                val n = q.removeFirst()
+                scanned++
+                val nodePkg = n.packageName?.toString() ?: ""
+                if (nodePkg == packageName) {
+                    for (i in 0 until n.childCount) {
+                        n.getChild(i)?.let { q.add(it) }
+                    }
+                    continue
+                }
+                val textValue = (n.text?.toString() ?: "").trim()
+                val descValue = (n.contentDescription?.toString() ?: "").trim()
+                val text = (if (textValue.isNotBlank()) textValue else descValue).trim()
+                val cls = (n.className?.toString() ?: "").trim()
+                val viewId = (n.viewIdResourceName?.toString() ?: "").trim()
+                val r = Rect()
+                n.getBoundsInScreen(r)
+                val centerX = r.centerX()
+                val centerY = r.centerY()
+                val isOverlayHint =
+                    text.contains("自动支付助手") ||
+                        descValue.contains("自动支付助手") ||
+                        viewId.contains("com.example.demo") ||
+                        cls.contains("com.example.demo")
+                val shouldCollect = (text.isNotBlank() || n.isClickable) && r.width() > 0 && r.height() > 0
+                val statusBarNoise = isStatusBarNoiseNode(text, cls, n.isClickable, r, centerY, screenH)
+                if (shouldCollect && !isOverlayHint && !statusBarNoise) {
+                    val shortText = if (text.length > 60) text.substring(0, 60) else text
+                    val key = shortText + "|" + centerX + "|" + centerY + "|" + n.isClickable
+                    if (!dedup.contains(key)) {
+                        dedup.add(key)
+                        val obj = JSONObject()
+                        obj.put("text", shortText)
+                        obj.put("className", if (cls.length > 60) cls.substring(0, 60) else cls)
+                        obj.put("clickable", n.isClickable)
+                        obj.put("enabled", n.isEnabled)
+                        obj.put("centerX", centerX)
+                        obj.put("centerY", centerY)
+                        obj.put("bounds", "${r.left},${r.top},${r.right},${r.bottom}")
+                        out.put(obj)
+                    }
+                }
+                val cc = n.childCount
+                for (i in 0 until cc) {
+                    n.getChild(i)?.let { q.add(it) }
+                }
+            }
+            if (out.length() >= 180 || scanned >= 3500) break
+        }
+        return out
+    }
+
+    private fun collectUiElementsForAiAllWindows(windows: List<AccessibilityWindowInfo>): JSONArray {
+        val out = JSONArray()
+        val dedup = HashSet<String>()
+        var scanned = 0
+        val dm = resources.displayMetrics
+        val screenH = dm.heightPixels.coerceAtLeast(1)
+        val aiRoots = windows.filter { it.root != null }.sortedByDescending { it.layer }.mapNotNull { it.root }
+        for (root in aiRoots) {
+            val q = ArrayDeque<AccessibilityNodeInfo>()
+            q.add(root)
+            while (q.isNotEmpty() && scanned < 4500 && out.length() < 220) {
+                val n = q.removeFirst()
+                scanned++
+                val nodePkg = n.packageName?.toString() ?: ""
+                if (nodePkg == packageName) {
+                    for (i in 0 until n.childCount) {
+                        n.getChild(i)?.let { q.add(it) }
+                    }
+                    continue
+                }
+                val textValue = (n.text?.toString() ?: "").trim()
+                val descValue = (n.contentDescription?.toString() ?: "").trim()
+                val text = (if (textValue.isNotBlank()) textValue else descValue).trim()
+                val cls = (n.className?.toString() ?: "").trim()
+                val viewId = (n.viewIdResourceName?.toString() ?: "").trim()
+                val r = Rect()
+                n.getBoundsInScreen(r)
+                val centerX = r.centerX()
+                val centerY = r.centerY()
+                val isOverlayHint =
+                    text.contains("自动支付助手") ||
+                        descValue.contains("自动支付助手") ||
+                        viewId.contains("com.example.demo") ||
+                        cls.contains("com.example.demo")
+                val shouldCollect = (text.isNotBlank() || n.isClickable) && r.width() > 0 && r.height() > 0
+                val statusBarNoise = isStatusBarNoiseNode(text, cls, n.isClickable, r, centerY, screenH)
+                if (shouldCollect && !isOverlayHint && !statusBarNoise) {
+                    val shortText = if (text.length > 60) text.substring(0, 60) else text
+                    val key = shortText + "|" + centerX + "|" + centerY + "|" + n.isClickable
+                    if (!dedup.contains(key)) {
+                        dedup.add(key)
+                        val obj = JSONObject()
+                        obj.put("text", shortText)
+                        obj.put("className", if (cls.length > 60) cls.substring(0, 60) else cls)
+                        obj.put("clickable", n.isClickable)
+                        obj.put("enabled", n.isEnabled)
+                        obj.put("centerX", centerX)
+                        obj.put("centerY", centerY)
+                        obj.put("bounds", "${r.left},${r.top},${r.right},${r.bottom}")
+                        out.put(obj)
+                    }
+                }
+                val cc = n.childCount
+                for (i in 0 until cc) {
+                    n.getChild(i)?.let { q.add(it) }
+                }
+            }
+            if (out.length() >= 220 || scanned >= 4500) break
+        }
+        return out
+    }
+
+    private fun hasAuthInterruptionKeywords(windows: List<AccessibilityWindowInfo>): Boolean {
+        val keys = listOf("登录", "验证", "授权", "人脸", "指纹", "刷脸", "权限")
+        for (root in selectReplayRoots(windows)) {
+            val q = ArrayDeque<AccessibilityNodeInfo>()
+            q.add(root)
+            var scanned = 0
+            while (q.isNotEmpty() && scanned < 2500) {
+                val n = q.removeFirst()
+                scanned++
+                val text = (n.text?.toString() ?: n.contentDescription?.toString() ?: "").trim()
+                if (text.isNotBlank() && keys.any { text.contains(it) }) {
+                    return true
+                }
+                for (i in 0 until n.childCount) {
+                    n.getChild(i)?.let { q.add(it) }
+                }
+            }
+        }
+        return false
+    }
+
+    private fun hasAlipayWindowContext(windows: List<AccessibilityWindowInfo>, pkgName: String): Boolean {
+        if (pkgName.contains("com.eg.android.AlipayGphone")) return true
+        for (w in windows) {
+            val rootPkg = w.root?.packageName?.toString() ?: ""
+            if (rootPkg.contains("com.eg.android.AlipayGphone")) return true
+        }
+        return false
+    }
+
+    private fun buildAiUiSignature(windows: List<AccessibilityWindowInfo>): String {
+        if (windows.isEmpty()) return "empty_windows"
+        val chunks = ArrayList<String>(8)
+        val sorted = windows.sortedByDescending { it.layer }
+        for (w in sorted) {
+            if (chunks.size >= 8) break
+            val root = w.root ?: continue
+            val r = Rect()
+            try {
+                root.getBoundsInScreen(r)
+            } catch (_: Exception) {
+            }
+            val pkg = root.packageName?.toString() ?: ""
+            val cls = root.className?.toString() ?: ""
+            val childCount = root.childCount
+            chunks.add("${w.layer}|${w.type}|$pkg|$cls|${r.left},${r.top},${r.right},${r.bottom}|$childCount")
+        }
+        if (chunks.isEmpty()) return "empty_roots"
+        return chunks.joinToString(";")
+    }
+
+    private fun dumpAiWindowsForDebug(windows: List<AccessibilityWindowInfo>, reason: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastAiWindowDumpAt < 2500) return
+        lastAiWindowDumpAt = now
+        Log.i(TAG, "AI_DEBUG window_dump reason=$reason windows=${windows.size}")
+        for ((idx, w) in windows.withIndex()) {
+            val root = w.root
+            val r = Rect()
+            try {
+                root?.getBoundsInScreen(r)
+            } catch (_: Exception) {
+            }
+            val pkg = root?.packageName?.toString() ?: ""
+            val cls = root?.className?.toString() ?: ""
+            Log.i(
+                TAG,
+                "AI_DEBUG window[$idx] layer=${w.layer} type=${w.type} title=${w.title} pkg=$pkg cls=$cls bounds=${r.left},${r.top},${r.right},${r.bottom}",
+            )
+            dumpNodeTree(root, idx, 450)
+        }
+    }
+
+    private fun clickNodeByAiTargetText(targetText: String): Boolean {
+        val key = targetText.trim()
+        if (key.isBlank()) return false
+        val root = rootInActiveWindow ?: return false
+        val queue = java.util.LinkedList<AccessibilityNodeInfo>()
+        queue.add(root)
+        while (queue.isNotEmpty()) {
+            val node = queue.poll() ?: continue
+            val text = node.text?.toString()?.trim().orEmpty()
+            val desc = node.contentDescription?.toString()?.trim().orEmpty()
+            val hit = text == key || desc == key || text.contains(key) || desc.contains(key)
+            if (hit) {
+                var clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    var parent = node.parent
+                    while (parent != null) {
+                        if (parent.isClickable && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                            clicked = true
+                            break
+                        }
+                        parent = parent.parent
+                    }
+                }
+                if (clicked) {
+                    Log.i(TAG, "AI_DEBUG clicked_by_text target=$key")
+                    return true
+                }
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        return false
+    }
+
+    private fun maybeHandleStuckByAi(windows: List<AccessibilityWindowInfo>, pkgName: String) {
+        val now = System.currentTimeMillis()
+        val step = loopStep
+        val stepElapsed = if (loopStepAt > 0L) now - loopStepAt else Long.MAX_VALUE
+        val uiSignature = buildAiUiSignature(windows)
+        if (uiSignature != lastAiUiSignature) {
+            lastAiUiSignature = uiSignature
+            lastAiUiChangedAt = now
+        } else if (lastAiUiChangedAt <= 0L) {
+            lastAiUiChangedAt = now
+        }
+        val uiStableMs = if (lastAiUiChangedAt > 0L) now - lastAiUiChangedAt else 0L
+        fun logAiDebug(reason: String) {
+            if (now - lastAiDebugAt < 1200) return
+            lastAiDebugAt = now
+            Log.i(TAG, "AI_DEBUG reason=$reason loop=$isLooping step=$step recording=$isRecording switching=$payMethodSwitching inFlight=$aiAssistInFlight pkg=$pkgName")
+        }
+        if (!isLooping) {
+            logAiDebug("not_looping")
+            return
+        }
+        if (isRecording) {
+            logAiDebug("recording")
+            return
+        }
+        if (payMethodSwitching) {
+            logAiDebug("pay_method_switching")
+            return
+        }
+        if (!hasAlipayWindowContext(windows, pkgName)) {
+            logAiDebug("not_alipay_context")
+            return
+        }
+        val bootstrapMs = if (step == LoopStep.AWAIT_ALIPAY) 1500 else 7000
+        if (currentLoopStartedAt > 0L && now - currentLoopStartedAt < bootstrapMs) {
+            logAiDebug("loop_bootstrap")
+            return
+        }
+        val minStepElapsedMs =
+            when (step) {
+                LoopStep.AWAIT_ALIPAY -> 4200L
+                LoopStep.AWAIT_KEYBOARD -> 3300L
+                LoopStep.AWAIT_SUCCESS -> 4500L
+                else -> Long.MAX_VALUE
+            }
+        val stableGateMs =
+            when (step) {
+                LoopStep.AWAIT_ALIPAY -> 2200L
+                LoopStep.AWAIT_KEYBOARD -> 1800L
+                LoopStep.AWAIT_SUCCESS -> 2600L
+                else -> Long.MAX_VALUE
+            }
+        val forceTimeoutMs =
+            when (step) {
+                LoopStep.AWAIT_ALIPAY -> 11000L
+                LoopStep.AWAIT_KEYBOARD -> 9000L
+                LoopStep.AWAIT_SUCCESS -> 12000L
+                else -> Long.MAX_VALUE
+            }
+        val allowAi =
+            when (step) {
+                LoopStep.AWAIT_SUCCESS, LoopStep.AWAIT_ALIPAY, LoopStep.AWAIT_KEYBOARD ->
+                    (stepElapsed > minStepElapsedMs && uiStableMs > stableGateMs) || stepElapsed > forceTimeoutMs
+                else -> false
+            }
+        if ((step == LoopStep.AWAIT_ALIPAY || step == LoopStep.AWAIT_KEYBOARD) &&
+            !hasPasswordPrompt(windows) &&
+            clickRepeatPayContinueIfPresent(windows, "ai_force_before_stable")
+        ) {
+            setLoopStep(LoopStep.AWAIT_KEYBOARD)
+            logAiDebug("repeat_pay_continue_force")
+            return
+        }
+        if (!allowAi) {
+            logAiDebug("wait_stable_${step}_${stepElapsed}ms_${uiStableMs}ms")
+            return
+        }
+        if (step == LoopStep.AWAIT_SUCCESS && lastPaymentWindowAt <= 0L) {
+            logAiDebug("await_payment_window")
+            return
+        }
+        if (waitingNextOrder) {
+            logAiDebug("waiting_next_order")
+            return
+        }
+        if (step == LoopStep.AWAIT_SUCCESS && now - lastPaymentWindowAt < 5000) {
+            logAiDebug("recent_payment_window")
+            return
+        }
+        if (step == LoopStep.AWAIT_SUCCESS && now - lastPlayTime < 7000) {
+            logAiDebug("recent_script_play")
+            return
+        }
+        if (hasAuthInterruptionKeywords(windows) && uiStableMs < 3500L) {
+            logAiDebug("auth_interruption")
+            return
+        }
+        if (aiAssistInFlight) {
+            logAiDebug("in_flight")
+            return
+        }
+        if (now - lastAiAssistAt < 4000) {
+            logAiDebug("cooldown_assist")
+            return
+        }
+        if (now - lastPayMethodSwitchAt < 1800) {
+            logAiDebug("cooldown_switch")
+            return
+        }
+        val dm = resources.displayMetrics
+        val triggerReason = "allow_step_${step}_${stepElapsed}ms"
+        var elements = collectUiElementsForAi(windows)
+        var elementsSource = "strict"
+        if (elements.length() <= 8) {
+            val relaxed = collectUiElementsForAiRelaxed(windows)
+            if (relaxed.length() > elements.length()) {
+                elements = relaxed
+                elementsSource = "relaxed"
+                logAiDebug("elements_relaxed_${elements.length()}")
+                aiZeroElementsSinceAt = 0L
+            } else if (elements.length() == 0) {
+                logAiDebug("elements_collected_0")
+            }
+            dumpAiWindowsForDebug(windows, "sparse_elements_${elements.length()}_$elementsSource")
+        } else {
+            logAiDebug("elements_collected_${elements.length()}")
+            aiZeroElementsSinceAt = 0L
+        }
+        if (isTopBarOnlyElements(elements, dm.heightPixels)) {
+            val allWindows = collectUiElementsForAiAllWindows(windows)
+            val allWindowsTopOnly = isTopBarOnlyElements(allWindows, dm.heightPixels)
+            Log.i(
+                TAG,
+                "AI_DEBUG_BP top_bar_detected source=$elementsSource oldCount=${elements.length()} allCount=${allWindows.length()} allTopOnly=$allWindowsTopOnly",
+            )
+            if (allWindows.length() > elements.length() && !allWindowsTopOnly) {
+                elements = allWindows
+                elementsSource = "all_windows"
+                logAiDebug("top_bar_only_fallback_${elements.length()}")
+            } else {
+                logAiDebug("top_bar_only_wait_${elements.length()}")
+                dumpAiWindowsForDebug(windows, "top_bar_only_${elements.length()}_${elementsSource}")
+                return
+            }
+        }
+        if (elements.length() == 0) {
+            if (step == LoopStep.AWAIT_ALIPAY || step == LoopStep.AWAIT_KEYBOARD) {
+                if (aiZeroElementsSinceAt <= 0L) aiZeroElementsSinceAt = now
+                val zeroMs = now - aiZeroElementsSinceAt
+                if (zeroMs < 5500) {
+                    logAiDebug("no_elements_transient_${step}_${zeroMs}ms")
+                    return
+                }
+                if (now - lastAiReloadAt > 7000) {
+                    lastAiReloadAt = now
+                    Log.i(TAG, "AI_DEBUG no_elements_fallback_reload step=$step zeroMs=${zeroMs}ms")
+                    notifyNoAvailablePayMethod()
+                }
+                logAiDebug("no_elements_timeout_${step}_${zeroMs}ms")
+                return
+            }
+            if (step == LoopStep.AWAIT_SUCCESS && now - lastAiReloadAt > 10000) {
+                val seenPaymentRecently = lastPaymentWindowAt > 0L && now - lastPaymentWindowAt < 45000
+                if (seenPaymentRecently) {
+                    lastAiReloadAt = now
+                    Log.i(TAG, "AI_DEBUG trigger_reload_when_no_elements")
+                    notifyNoAvailablePayMethod()
+                }
+            }
+            logAiDebug("no_elements")
+            return
+        }
+        appendAiHoneypotElement(elements)
+        val fingerprint = pkgName + "|" + elements.toString().hashCode().toString()
+        if (fingerprint == lastAiAssistFingerprint && now - lastAiAssistAt < 9000) {
+            logAiDebug("same_fingerprint")
+            return
+        }
+        lastAiAssistFingerprint = fingerprint
+        lastAiAssistAt = now
+        aiAssistInFlight = true
+        val preview = buildAiElementsPreview(elements)
+        Log.i(TAG, "AI_DEBUG request_next_action elements=${elements.length()} screen=${dm.widthPixels}x${dm.heightPixels} preview=$preview")
+        logAiAudit(
+            "ai_request",
+            JSONObject().apply {
+                put("triggerReason", triggerReason)
+                put("loopStep", step.toString())
+                put("packageName", pkgName)
+                put("elementsSource", elementsSource)
+                put("elementsCount", elements.length())
+                put("elementsPreview", preview)
+                put("elementsJson", elements.toString())
+                put("screenWidth", dm.widthPixels)
+                put("screenHeight", dm.heightPixels)
+            },
+        )
+        CoroutineScope(Dispatchers.IO).launch {
+            val decision = ApiClient.requestAiNextActionBlocking(
+                context = this@AutoPaymentService,
+                packageName = pkgName,
+                screenWidth = dm.widthPixels,
+                screenHeight = dm.heightPixels,
+                elements = elements,
+            )
+            Handler(Looper.getMainLooper()).post {
+                aiAssistInFlight = false
+                val actionRaw = decision?.action ?: "none"
+                val action =
+                    if (step == LoopStep.AWAIT_SUCCESS) {
+                        actionRaw
+                    } else {
+                        when (actionRaw) {
+                            "reload_order" -> {
+                                if (step == LoopStep.AWAIT_ALIPAY && stepElapsed > 7000 && elements.length() <= 8) "reload_order" else "wait"
+                            }
+                            else -> actionRaw
+                        }
+                    }
+                val reason = decision?.reason ?: ""
+                val err = decision?.error ?: ""
+                val targetText = decision?.targetText ?: ""
+                Log.i(TAG, "AI_DEBUG response action=$action reason=$reason error=$err target=$targetText x=${decision?.x ?: 0} y=${decision?.y ?: 0}")
+                logAiAudit(
+                    "ai_response",
+                    JSONObject().apply {
+                        put("triggerReason", triggerReason)
+                        put("loopStep", step.toString())
+                        put("packageName", pkgName)
+                        put("actionRaw", actionRaw)
+                        put("action", action)
+                        put("reason", reason)
+                        put("error", err)
+                        put("targetText", targetText)
+                        put("x", decision?.x ?: 0)
+                        put("y", decision?.y ?: 0)
+                        put("elementsSource", elementsSource)
+                        put("elementsCount", elements.length())
+                        put("elementsPreview", preview)
+                    },
+                )
+                when (action) {
+                    "click" -> {
+                        val clickX = decision?.x ?: 0
+                        val clickY = decision?.y ?: 0
+                        val clickedByText = clickNodeByAiTargetText(targetText)
+                        if (!clickedByText && clickX > 0 && clickY > 0) {
+                            performClickNow(clickX, clickY)
+                        }
+                        ApiClient.logEvent(this@AutoPaymentService, opType = "INFO", durationMs = 0, level = "INFO", keyword = "ai_click")
+                    }
+                    "close_popup" -> {
+                        val clickedByText = clickNodeByAiTargetText(targetText)
+                        if (!clickedByText) {
+                            performGlobalAction(GLOBAL_ACTION_BACK)
+                        }
+                        ApiClient.logEvent(this@AutoPaymentService, opType = "INFO", durationMs = 0, level = "INFO", keyword = "ai_close_popup")
+                    }
+                    "back" -> {
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+                        ApiClient.logEvent(this@AutoPaymentService, opType = "INFO", durationMs = 0, level = "INFO", keyword = "ai_back")
+                    }
+                    "reload_order" -> {
+                        val nowReload = System.currentTimeMillis()
+                        val seenPaymentRecently = lastPaymentWindowAt > 0L && nowReload - lastPaymentWindowAt < 45000
+                        val allowReloadInAlipay = step == LoopStep.AWAIT_ALIPAY && elements.length() <= 8 && stepElapsed > 7000
+                        if ((seenPaymentRecently || allowReloadInAlipay) && nowReload - lastAiReloadAt > 6000) {
+                            lastAiReloadAt = nowReload
+                            Log.i(TAG, "AI_DEBUG reload_order_exec step=$step elements=${elements.length()} stepElapsed=${stepElapsed}ms seenPaymentRecently=$seenPaymentRecently")
+                            notifyNoAvailablePayMethod()
+                        }
+                        ApiClient.logEvent(this@AutoPaymentService, opType = "INFO", durationMs = 0, level = "WARN", keyword = "ai_reload_order")
+                    }
+                    "wait" -> {
+                        ApiClient.logEvent(this@AutoPaymentService, opType = "INFO", durationMs = 0, level = "INFO", keyword = "ai_wait")
+                    }
+                    else -> {
+                    }
+                }
+            }
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -1791,12 +3038,12 @@ class AutoPaymentService : AccessibilityService() {
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
 
             dumpAlipayWindowsIfNeeded(event)
-            
+
+            val windows = windows
             if (keypadCaptured && event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+                maybeHandleStuckByAi(windows, pkgName ?: "")
                 return
             }
-            
-            val windows = windows
             var foundPaymentWindow = false
             var foundSuccessWindow = false
             var foundPasswordError = false
@@ -1849,6 +3096,9 @@ class AutoPaymentService : AccessibilityService() {
             val nowEvt = System.currentTimeMillis()
             if (foundPaymentWindow) {
                 lastPaymentWindowAt = nowEvt
+                if (isLooping && (loopStep == LoopStep.AWAIT_ALIPAY || loopStep == LoopStep.WAIT_NEXT_ORDER)) {
+                    setLoopStep(LoopStep.AWAIT_KEYBOARD)
+                }
             }
             if (foundSuccessWindow) {
                 lastSuccessWindowAt = nowEvt
@@ -1863,7 +3113,7 @@ class AutoPaymentService : AccessibilityService() {
                 }
             }
 
-            if (isLooping && foundPasswordError) {
+            if (isLooping && foundPasswordError && (foundPaymentWindow || loopStep == LoopStep.AWAIT_KEYBOARD || loopStep == LoopStep.AWAIT_SUCCESS)) {
                 val now = System.currentTimeMillis()
                 if (now - lastPasswordErrorReportAt > 5000) {
                     lastPasswordErrorReportAt = now
@@ -1879,6 +3129,7 @@ class AutoPaymentService : AccessibilityService() {
                     ApiClient.logEvent(this, opType = "ERROR", durationMs = 0, level = "ERROR", keyword = "password_error")
                     isLooping = false
                     loopingState = false
+                    setLoopStep(LoopStep.IDLE)
                     if ((replaySessionId != null || replayPending) && replayRecordType == "LOOP_PAYMENT") {
                         stopReplay("INCOMPLETE")
                     }
@@ -1913,10 +3164,7 @@ class AutoPaymentService : AccessibilityService() {
             }
             
             if (foundPaymentWindow) {
-                if (waitingNextOrder) {
-                    waitingNextOrder = false
-                    waitingNextOrderAt = 0L
-                }
+                lastAiAssistFingerprint = ""
                 var floatingService = FloatingMenuService.instance
                 if (floatingService == null) {
                     ensureFloatingServiceRunning()
@@ -1924,6 +3172,15 @@ class AutoPaymentService : AccessibilityService() {
                 }
                 if (floatingService != null && floatingService.hasScript()) {
                     if (!isRecording) {
+                         if (isLooping && !hasPasswordPrompt(windows) &&
+                             clickRepeatPayContinueIfPresent(windows, "payment_window_detected")
+                         ) {
+                             setLoopStep(LoopStep.AWAIT_KEYBOARD)
+                             return
+                         }
+                         if (isLooping && hasPasswordPrompt(windows)) {
+                             setLoopStep(LoopStep.AWAIT_KEYBOARD)
+                         }
                          Log.d(TAG, "Found payment page and script exists. Triggering auto-play.")
                          maybeEnsurePayMethodAndPlay(windows)
                          if (!isLooping && replaySessionId == null && !replayPending) {
@@ -1954,6 +3211,7 @@ class AutoPaymentService : AccessibilityService() {
                     }
                 }
             } else if (foundSuccessWindow) {
+                lastAiAssistFingerprint = ""
                 if (isRecording) {
                     Log.d(TAG, "Found success page. Stopping recording.")
                     FloatingMenuService.instance?.commitScript() // 使用 commitScript 确保只保存最后6位
@@ -1964,19 +3222,25 @@ class AutoPaymentService : AccessibilityService() {
                         maybeSendReplayFrame(roots, true)
                     }
                     stopReplay("COMPLETED")
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        bringAppToFront()
+                    }, 1500)
                 }
                 
                 // 无论是录制模式结束，还是纯粹的循环模式，只要检测到成功，都触发通知
                 if (isLooping) {
                     Log.i(TAG, "Payment success confirmed. Broadcasting to MainActivity.")
                     val now = System.currentTimeMillis()
+                    waitingNextOrder = true
+                    waitingNextOrderAt = now
+                    setLoopStep(LoopStep.WAIT_NEXT_ORDER)
                     if (now - lastPaySuccessReportAt > 5000) {
                         lastPaySuccessReportAt = now
                         val selected = currentSelectedPayMethod(windows).ifBlank { SecureStorage.loadLastPayMethod(this) }
                         val selectedNorm = normalizePayMethodLabel(selected)
-                        if (selectedNorm.isNotBlank()) {
-                            SecureStorage.saveLastSuccessPayMethod(this, selectedNorm)
-                        }
+                        saveLastSuccessPayMethodIfAllowed(selectedNorm)
+                        val roots = selectReplayRoots(windows)
+                        val orderId = getCurrentPayOrderId()
                         ApiClient.reportPaymentMethodStatus(
                             this,
                             method = selectedNorm.ifBlank { "BALANCE" },
@@ -1984,6 +3248,9 @@ class AutoPaymentService : AccessibilityService() {
                             message = "支付成功",
                             success = true,
                         )
+                        if (orderId.isNotBlank() && roots.isNotEmpty()) {
+                            reportAccessibilitySuccessEvidence(orderId, selectedNorm, roots)
+                        }
                     }
                     notifyPaymentSuccess()
                     val roots = selectReplayRoots(windows)
@@ -2020,6 +3287,7 @@ class AutoPaymentService : AccessibilityService() {
                     // }
                 }
             }
+            maybeHandleStuckByAi(windows, pkgName ?: "")
 
             if ((replaySessionId != null || replayPending) && windows.isNotEmpty()) {
                 val roots = selectReplayRoots(windows)
@@ -2042,6 +3310,9 @@ class AutoPaymentService : AccessibilityService() {
             Log.d(TAG, "Script playback debounced.")
             return
         }
+        if (isLooping) {
+            setLoopStep(LoopStep.AWAIT_SUCCESS)
+        }
         lastPlayTime = System.currentTimeMillis()
         
         Handler(Looper.getMainLooper()).post {
@@ -2052,6 +3323,33 @@ class AutoPaymentService : AccessibilityService() {
         }
 
         CoroutineScope(Dispatchers.Default).launch {
+            val playbackActions = run {
+                val clickActions = actions.filter { it.type == ScriptActionType.CLICK }
+                val maskedCount = clickActions.count { a ->
+                    val d = a.targetDigit?.trim().orEmpty()
+                    d.isNotEmpty() && d.all { it == '*' }
+                }
+                if (clickActions.isNotEmpty() && maskedCount > 0) {
+                    val pwd = SecureStorage.loadPaymentRecord(this@AutoPaymentService)?.password
+                        ?.trim()
+                        .orEmpty()
+                        .filter { it.isDigit() }
+                    if (pwd.isNotBlank()) {
+                        val rebuilt = ArrayList<ScriptAction>(pwd.length)
+                        for (i in pwd.indices) {
+                            val base = clickActions.getOrNull(i) ?: clickActions.last()
+                            rebuilt.add(base.copy(targetDigit = pwd[i].toString()))
+                        }
+                        ApiClient.logEvent(this@AutoPaymentService, opType = "INFO", durationMs = 0, level = "WARN", keyword = "script_masked_use_password")
+                        rebuilt
+                    } else {
+                        actions
+                    }
+                } else {
+                    actions
+                }
+            }
+
             // 阶段 1: 等待键盘完全就绪 (最多等待 3 秒)
             // 有时候虽然进入了支付页，但键盘可能还在动画中，或者尚未捕获到布局
             Log.i(TAG, "Waiting for keypad to become ready...")
@@ -2076,7 +3374,7 @@ class AutoPaymentService : AccessibilityService() {
             // 稍微等待一下，确保界面完全就绪
             delay(200)
             
-            for ((index, action) in actions.withIndex()) {
+            for ((index, action) in playbackActions.withIndex()) {
                 if (action.type == ScriptActionType.CLICK) {
                     var targetX = action.x
                     var targetY = action.y

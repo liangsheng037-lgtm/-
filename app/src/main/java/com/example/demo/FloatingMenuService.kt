@@ -544,7 +544,8 @@ class FloatingMenuService : Service() {
         }
         getSharedPreferences("app_config", Context.MODE_PRIVATE)
             .edit()
-            .putBoolean("pending_next_round", true)
+            .putBoolean("pending_confirm_payment_done", true)
+            .putBoolean("pending_next_round", false)
             .putBoolean("pending_need_decrement", false)
             .apply()
         ApiClient.upsertDevice(this, accessibilityEnabled = AutoPaymentService.instance != null, scriptRecorded = true, looping = AutoPaymentService.loopingState)
@@ -589,19 +590,7 @@ class FloatingMenuService : Service() {
         return jsonArray.toString()
     }
 
-    private fun showToast(message: String) {
-        try {
-            Handler(Looper.getMainLooper()).post {
-                try {
-                    Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to show toast: ${e.message}")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in showToast: ${e.message}")
-        }
-    }
+    private fun showToast(message: String) {}
 
     fun recordActionFromEvent(x: Int, y: Int, digit: String? = null) {
         if (!isRecording) return

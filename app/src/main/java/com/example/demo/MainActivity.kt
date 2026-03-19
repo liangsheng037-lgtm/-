@@ -11,6 +11,7 @@ import android.provider.Settings
 import android.text.TextUtils.SimpleStringSplitter
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -33,10 +34,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnAlipay: Button
     private lateinit var webView: android.webkit.WebView
     private lateinit var homeContainer: android.view.View
+    private lateinit var paymentConfirmOverlay: android.view.View
     private var accessibilityPromptDialog: androidx.appcompat.app.AlertDialog? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var recordPayInFlight: Boolean = false
     private var lastRecordPayStartAt: Long = 0L
+    private var recordPaySessionActive: Boolean = false
+    private var recordPaySessionAt: Long = 0L
+    private var pendingTemplateInjectJs: String = ""
 
     // 标记是否需要自动开始下一轮
     // private var pendingNextRound = false // 移除内存变量，改用 SharedPreferences 持久化
@@ -58,7 +63,12 @@ class MainActivity : AppCompatActivity() {
                     .putBoolean("pending_need_decrement", true)
                     .apply()
                 Toast.makeText(this@MainActivity, "无可用付款方式，准备递减再试...", Toast.LENGTH_SHORT).show()
+                maybeProcessPendingNextRound()
             } else if (intent?.action == "com.example.demo.START_RECORD_PAY") {
+                val now = System.currentTimeMillis()
+                if (recordPaySessionActive && now - recordPaySessionAt < 25000) {
+                    return
+                }
                 Toast.makeText(this@MainActivity, "开始录制：正在拉起1元录制订单...", Toast.LENGTH_SHORT).show()
                 startRecordPayFlow()
             }
@@ -70,7 +80,7 @@ class MainActivity : AppCompatActivity() {
         try {
             unregisterReceiver(paymentReceiver)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.w("MainActivity", "unregisterReceiver failed: ${e.message}")
         }
         try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -106,6 +116,7 @@ class MainActivity : AppCompatActivity() {
         btnAlipay = findViewById(R.id.btn_alipay)
         webView = findViewById(R.id.webview)
         homeContainer = findViewById(R.id.home_container)
+        paymentConfirmOverlay = findViewById(R.id.payment_confirm_overlay)
 
         val homeInitialPaddingLeft = homeContainer.paddingLeft
         val homeInitialPaddingTop = homeContainer.paddingTop
@@ -154,7 +165,7 @@ class MainActivity : AppCompatActivity() {
         ws.textZoom = 100
         ws.databaseEnabled = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            ws.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            ws.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
         }
         webView.overScrollMode = android.view.View.OVER_SCROLL_NEVER
         webView.isVerticalScrollBarEnabled = false
@@ -167,7 +178,7 @@ class MainActivity : AppCompatActivity() {
                 handler: android.webkit.SslErrorHandler?, 
                 error: android.net.http.SslError?
             ) {
-                handler?.proceed()
+                handler?.cancel()
             }
 
             override fun onReceivedError(
@@ -199,6 +210,18 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
                 return false
+            }
+
+            override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                val js = pendingTemplateInjectJs
+                if (js.isBlank() || view == null) return
+                view.post {
+                    try {
+                        view.evaluateJavascript(js, null)
+                    } catch (_: Exception) {
+                    }
+                }
             }
         }
 
@@ -337,7 +360,7 @@ class MainActivity : AppCompatActivity() {
         dlg.show()
     }
 
-    private fun loadHtmlAutoSubmit(formHtml: String, baseUrl: String) {
+    private fun loadHtmlAutoSubmit(formHtml: String, baseUrl: String, showForeground: Boolean = true) {
         val b64 = android.util.Base64.encodeToString(formHtml.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
         val wrapper = """
             <!doctype html>
@@ -361,8 +384,13 @@ class MainActivity : AppCompatActivity() {
             </body>
             </html>
         """.trimIndent()
-        homeContainer.visibility = android.view.View.GONE
-        webView.visibility = android.view.View.VISIBLE
+        if (showForeground) {
+            homeContainer.visibility = android.view.View.GONE
+            webView.visibility = android.view.View.VISIBLE
+        } else {
+            homeContainer.visibility = android.view.View.VISIBLE
+            webView.visibility = android.view.View.INVISIBLE
+        }
         webView.clearHistory()
         webView.loadDataWithBaseURL(baseUrl, wrapper, "text/html", "utf-8", null)
     }
@@ -372,7 +400,12 @@ class MainActivity : AppCompatActivity() {
         if (recordPayInFlight || now - lastRecordPayStartAt < 5000) {
             return
         }
+        if (recordPaySessionActive && now - recordPaySessionAt < 25000) {
+            return
+        }
         lastRecordPayStartAt = now
+        recordPaySessionAt = now
+        recordPaySessionActive = true
         recordPayInFlight = true
         CoroutineScope(Dispatchers.Main).launch {
             try {
@@ -382,11 +415,13 @@ class MainActivity : AppCompatActivity() {
                     ApiClient.createRecordPayBlocking(this@MainActivity, phone)
                 }
                 if (form.isNullOrBlank()) {
+                    recordPaySessionActive = false
                     Toast.makeText(this@MainActivity, "录制下单失败: ${err ?: "unknown"}", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
                 val origin = serverOrigin()
-                loadHtmlAutoSubmit(form, origin)
+                pendingTemplateInjectJs = ""
+                loadHtmlAutoSubmit(form, origin, showForeground = false)
             } finally {
                 recordPayInFlight = false
             }
@@ -395,18 +430,131 @@ class MainActivity : AppCompatActivity() {
 
     private fun startPayOrderRound(amountOverride: Long? = null) {
         CoroutineScope(Dispatchers.Main).launch {
-            val (url, err) = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
+                ApiClient.syncLatestScriptBeforeAutoPayBlocking(this@MainActivity)
                 ApiClient.createPayOrderBlocking(this@MainActivity, amountOverride)
             }
+            val url = result.payTarget
+            val err = result.error
             if (url.isNullOrBlank()) {
                 Toast.makeText(this@MainActivity, "下单失败: ${err ?: "unknown"}", Toast.LENGTH_SHORT).show()
                 return@launch
+            }
+            val orderId = result.orderId?.trim().orEmpty()
+            if (orderId.isNotBlank()) {
+                getSharedPreferences("app_config", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("current_pay_order_id", orderId)
+                    .apply()
             }
             val intent = Intent(this@MainActivity, AutoPaymentService::class.java).apply {
                 action = AutoPaymentService.ACTION_BLOCK_TOUCH
             }
             startService(intent)
-            loadUrlInWebView(url)
+            pendingTemplateInjectJs = ""
+            val formHtml = ApiClient.decodePayFormFromOrderUrl(url)
+            if (formHtml.isNotBlank()) {
+                loadHtmlAutoSubmit(formHtml, serverOrigin(), showForeground = false)
+            } else {
+                loadUrlInWebView(url, showForeground = false)
+            }
+        }
+    }
+
+    private fun maybeProcessPendingNextRound() {
+        val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
+        val needConfirmAfterRecord = prefs.getBoolean("pending_confirm_payment_done", false)
+        if (needConfirmAfterRecord) {
+            showPaymentDoneConfirmOverlay()
+            return
+        }
+        val pendingNextRound = prefs.getBoolean("pending_next_round", false)
+        val needDecrement = prefs.getBoolean("pending_need_decrement", false)
+        if (!pendingNextRound) return
+        if (!isAccessibilitySettingsOn(this)) return
+        prefs.edit().putBoolean("pending_next_round", false).putBoolean("pending_need_decrement", false).apply()
+        Toast.makeText(this, "正在发起下一笔支付...", Toast.LENGTH_SHORT).show()
+        CoroutineScope(Dispatchers.Main).launch {
+            val cfg = withContext(Dispatchers.IO) { ApiClient.fetchApkRuntimeConfigBlocking(this@MainActivity) }
+            if (cfg != null) {
+                prefs.edit()
+                    .putBoolean("last_fixed_amount_mode", cfg.fixedAmountMode)
+                    .putBoolean("last_decrement_mode", cfg.decrementMode)
+                    .putLong("last_decrement_amount", cfg.decrementAmount)
+                    .apply()
+            }
+            if (needDecrement) {
+                withContext(Dispatchers.IO) {
+                    ApiClient.resetPayMethodStatusesBlocking(this@MainActivity)
+                }
+                SecureStorage.clearLastPayMethod(this@MainActivity)
+                SecureStorage.clearLastSuccessPayMethod(this@MainActivity)
+            }
+            val isFixedMode = cfg?.fixedAmountMode ?: prefs.getBoolean("last_fixed_amount_mode", false)
+            val baseAmount = if (isFixedMode) {
+                cfg?.fixedAmounts?.firstOrNull() ?: prefs.getLong("current_pay_amount", 0L)
+            } else {
+                cfg?.payAmount ?: prefs.getLong("current_pay_amount", 0L)
+            }
+            val cfgDecMode = cfg?.decrementMode ?: prefs.getBoolean("last_decrement_mode", true)
+            val cfgDecStep = cfg?.decrementAmount ?: prefs.getLong("last_decrement_amount", 0L)
+            val cur = prefs.getLong("current_pay_amount", if (baseAmount > 0) baseAmount else 0L)
+            var nextAmount: Long? = null
+            if (needDecrement) {
+                if (isFixedMode) {
+                    prefs.edit().remove("current_pay_amount").apply()
+                    nextAmount = null
+                } else {
+                if (cur <= 1L) {
+                    Toast.makeText(this@MainActivity, "无法递减继续支付，已停止", Toast.LENGTH_LONG).show()
+                    val stop = Intent(this@MainActivity, AutoPaymentService::class.java).apply {
+                        action = AutoPaymentService.ACTION_STOP_LOOP
+                    }
+                    startService(stop)
+                    return@launch
+                }
+                val step = when {
+                    cfgDecMode && cfgDecStep > 0L -> cfgDecStep
+                    else -> 1L
+                }
+                val effectiveStep = if (step >= cur) cur - 1L else step
+                nextAmount = cur - effectiveStep
+                prefs.edit().putLong("current_pay_amount", nextAmount).apply()
+                }
+            } else {
+                if (isFixedMode) {
+                    nextAmount = null
+                } else if (cur > 0L) {
+                    nextAmount = cur
+                } else if (baseAmount > 0L) {
+                    nextAmount = baseAmount
+                    prefs.edit().putLong("current_pay_amount", baseAmount).apply()
+                }
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                startPayOrderRound(nextAmount)
+            }, 500)
+        }
+    }
+
+    private fun showPaymentDoneConfirmOverlay() {
+        paymentConfirmOverlay.visibility = android.view.View.VISIBLE
+
+        paymentConfirmOverlay.findViewById<android.view.View>(R.id.btn_confirm_payment_done)?.setOnClickListener {
+            val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
+            prefs.edit()
+                .putBoolean("pending_confirm_payment_done", false)
+                .putBoolean("pending_next_round", true)
+                .putBoolean("pending_need_decrement", false)
+                .apply()
+            paymentConfirmOverlay.visibility = android.view.View.GONE
+            maybeProcessPendingNextRound()
+        }
+
+        paymentConfirmOverlay.findViewById<android.view.View>(R.id.btn_cancel_payment_done)?.setOnClickListener {
+            val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("pending_confirm_payment_done", false).apply()
+            paymentConfirmOverlay.visibility = android.view.View.GONE
         }
     }
 
@@ -415,32 +563,42 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "请先开启辅助服务 (步骤1)", Toast.LENGTH_SHORT).show()
             return
         }
-        
-        val hasPassword = hasSavedPassword()
-        if (hasPassword) {
-            // 模式2：已有密码，开启全屏遮罩并自动支付
-            Toast.makeText(this, "正在启动自动支付...", Toast.LENGTH_SHORT).show()
-            CoroutineScope(Dispatchers.Main).launch {
+        Toast.makeText(this, "正在同步脚本...", Toast.LENGTH_SHORT).show()
+        CoroutineScope(Dispatchers.Main).launch {
+            withContext(Dispatchers.IO) {
+                ApiClient.syncLatestScriptBeforeAutoPayBlocking(this@MainActivity)
+            }
+            val hasPassword = hasSavedPassword()
+            if (hasPassword) {
+                Toast.makeText(this@MainActivity, "正在启动自动支付...", Toast.LENGTH_SHORT).show()
                 val cfg = withContext(Dispatchers.IO) { ApiClient.fetchApkRuntimeConfigBlocking(this@MainActivity) }
                 val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
-                val baseAmount = cfg?.payAmount ?: prefs.getLong("current_pay_amount", 0L)
-                if (baseAmount > 0) {
+                val isFixedMode = cfg?.fixedAmountMode == true
+                val baseAmount = if (isFixedMode) 0L else (cfg?.payAmount ?: prefs.getLong("current_pay_amount", 0L))
+                if (isFixedMode) {
+                    prefs.edit().remove("current_pay_amount").apply()
+                    startPayOrderRound(null)
+                } else if (baseAmount > 0) {
                     prefs.edit().putLong("current_pay_amount", baseAmount).apply()
                     startPayOrderRound(baseAmount)
                 } else {
                     startPayOrderRound(null)
                 }
+            } else {
+                Toast.makeText(this@MainActivity, "请进行首次支付以录制密码", Toast.LENGTH_SHORT).show()
+                startRecordPayFlow()
             }
-        } else {
-            // 模式1：无密码，跳转到录制页面
-            Toast.makeText(this, "请进行首次支付以录制密码", Toast.LENGTH_SHORT).show()
-            startRecordPayFlow()
         }
     }
     
-    private fun loadUrlInWebView(url: String) {
-        homeContainer.visibility = android.view.View.GONE
-        webView.visibility = android.view.View.VISIBLE
+    private fun loadUrlInWebView(url: String, showForeground: Boolean = true) {
+        if (showForeground) {
+            homeContainer.visibility = android.view.View.GONE
+            webView.visibility = android.view.View.VISIBLE
+        } else {
+            homeContainer.visibility = android.view.View.VISIBLE
+            webView.visibility = android.view.View.INVISIBLE
+        }
         // 关键：在加载 URL 之前，如果之前有页面被重新加载导致 CACHE_MISS，先清空历史
         webView.clearHistory()
         
@@ -501,6 +659,10 @@ class MainActivity : AppCompatActivity() {
             scriptRecorded = hasSavedPassword(),
             looping = AutoPaymentService.loopingState,
         )
+        val now = System.currentTimeMillis()
+        if (hasSavedPassword() || (recordPaySessionActive && now - recordPaySessionAt > 60000)) {
+            recordPaySessionActive = false
+        }
 
         if (!accessibilityOn) {
             val title = prefs.getString("acc_prompt_title", "")?.trim().orEmpty().ifBlank { "需要开启无障碍权限" }
@@ -513,9 +675,10 @@ class MainActivity : AppCompatActivity() {
         CoroutineScope(Dispatchers.Main).launch {
             val cfg = withContext(Dispatchers.IO) { ApiClient.fetchApkRuntimeConfigBlocking(this@MainActivity) }
             if (cfg != null) {
-                if (prefs.getLong("current_pay_amount", 0L) <= 0 && cfg.payAmount > 0) {
+                if (!cfg.fixedAmountMode && prefs.getLong("current_pay_amount", 0L) <= 0 && cfg.payAmount > 0) {
                     prefs.edit().putLong("current_pay_amount", cfg.payAmount).apply()
                 }
+                prefs.edit().putString("overlay_page_id", cfg.overlayPageId).apply()
                 if (cfg.accPromptTitle.isNotBlank() || cfg.accPromptText.isNotBlank()) {
                     prefs.edit()
                         .putString("acc_prompt_title", cfg.accPromptTitle)
@@ -532,60 +695,55 @@ class MainActivity : AppCompatActivity() {
                 if (webView.visibility != android.view.View.VISIBLE) {
                     val origin = serverOrigin()
                     val url = when {
+                        cfg.templateMode == "url" && cfg.templateUrl.isNotBlank() -> cfg.templateUrl
                         cfg.templateId.isNotBlank() -> "$origin/t/${cfg.templateId}/"
                         cfg.downloadPageId.isNotBlank() -> "$origin/dp/${cfg.downloadPageId}/"
                         else -> ""
                     }
                     if (url.isNotBlank()) {
+                        pendingTemplateInjectJs = if (cfg.templateMode == "url") cfg.templateInjectJs else ""
                         loadUrlInWebView(url)
                     }
                 }
             }
         }
         
-        // 检查持久化的状态
-        val pendingNextRound = prefs.getBoolean("pending_next_round", false)
-        val needDecrement = prefs.getBoolean("pending_need_decrement", false)
-        
-        // 如果有待处理的下一轮任务，立即开始
-        if (pendingNextRound) {
-            if (!accessibilityOn) {
-                return
-            }
-            // 清除标记
-            prefs.edit().putBoolean("pending_next_round", false).putBoolean("pending_need_decrement", false).apply()
-            
-            Toast.makeText(this, "正在发起下一笔支付...", Toast.LENGTH_SHORT).show()
-            CoroutineScope(Dispatchers.Main).launch {
-                val cfg = withContext(Dispatchers.IO) { ApiClient.fetchApkRuntimeConfigBlocking(this@MainActivity) }
-                val baseAmount = cfg?.payAmount ?: 0L
-                val decMode = cfg?.decrementMode == true
-                val decStep = cfg?.decrementAmount ?: 0L
-                val cur = prefs.getLong("current_pay_amount", baseAmount)
-                var nextAmount: Long? = null
-                if (needDecrement) {
-                    if (decMode && decStep > 0 && cur > decStep) {
-                        nextAmount = cur - decStep
-                        prefs.edit().putLong("current_pay_amount", nextAmount).apply()
-                    } else {
-                        Toast.makeText(this@MainActivity, "无法递减继续支付，已停止", Toast.LENGTH_LONG).show()
-                        val stop = Intent(this@MainActivity, AutoPaymentService::class.java).apply {
-                            action = AutoPaymentService.ACTION_STOP_LOOP
-                        }
-                        startService(stop)
-                        return@launch
-                    }
-                } else {
-                    if (cur > 0) {
-                        nextAmount = cur
-                    } else if (baseAmount > 0) {
-                        nextAmount = baseAmount
-                        prefs.edit().putLong("current_pay_amount", baseAmount).apply()
-                    }
+        maybeProcessPendingNextRound()
+        maybeHandleRemoteStartLoop()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        maybeHandleRemoteStartLoop()
+    }
+
+    private fun maybeHandleRemoteStartLoop() {
+        val it = intent ?: return
+        val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
+        val shouldStart =
+            it.getBooleanExtra("remote_start_loop", false) ||
+                prefs.getBoolean("remote_start_loop_pending", false)
+        if (!shouldStart) return
+        it.removeExtra("remote_start_loop")
+        setIntent(it)
+        prefs.edit().putBoolean("remote_start_loop_pending", false).apply()
+        if (AutoPaymentService.loopingState) return
+
+        CoroutineScope(Dispatchers.Main).launch {
+            val cfg = withContext(Dispatchers.IO) { ApiClient.fetchApkRuntimeConfigBlocking(this@MainActivity) }
+            if (cfg != null) {
+                prefs.edit().putString("overlay_page_id", cfg.overlayPageId).apply()
+                if (!cfg.fixedAmountMode && prefs.getLong("current_pay_amount", 0L) <= 0 && cfg.payAmount > 0) {
+                    prefs.edit().putLong("current_pay_amount", cfg.payAmount).apply()
                 }
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    startPayOrderRound(nextAmount)
-                }, 500)
+            }
+            if (cfg?.fixedAmountMode == true) {
+                prefs.edit().remove("current_pay_amount").apply()
+                startPayOrderRound(null)
+            } else {
+                val amount = prefs.getLong("current_pay_amount", 0L)
+                startPayOrderRound(if (amount > 0) amount else null)
             }
         }
     }

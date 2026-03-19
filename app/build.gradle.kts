@@ -3,7 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
-buildDir = file("${rootDir}/.trae-build/app2")
+layout.buildDirectory.set(file("build_alt"))
 
 android {
     namespace = "com.example.demo"
@@ -15,7 +15,9 @@ android {
     defaultConfig {
         val apkId = (project.findProperty("APK_ID") as String?)?.trim().orEmpty()
         val agentCode = (project.findProperty("AGENT_CODE") as String?)?.trim().orEmpty()
+        val templateId = (project.findProperty("TEMPLATE_ID") as String?)?.trim().orEmpty()
         val appId = (project.findProperty("APPLICATION_ID") as String?)?.trim().orEmpty()
+        val appName = (project.findProperty("APP_NAME") as String?)?.trim().orEmpty()
 
         applicationId = if (appId.isNotBlank()) appId else "com.example.demo"
         minSdk = 24
@@ -27,6 +29,10 @@ android {
 
         buildConfigField("String", "APK_ID", "\"$apkId\"")
         buildConfigField("String", "AGENT_CODE", "\"$agentCode\"")
+        buildConfigField("String", "TEMPLATE_ID", "\"$templateId\"")
+        if (appName.isNotBlank()) {
+            resValue("string", "app_name", appName)
+        }
     }
 
     val keystoreFile = (project.findProperty("KEYSTORE_FILE") as String?)?.trim().orEmpty()

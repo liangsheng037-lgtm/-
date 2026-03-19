@@ -29,6 +29,7 @@ object SecureStorage {
         val scriptJson: String,
         val payMethod: String,
         val updatedAt: Long,
+        val scriptVersion: String,
     )
 
     private fun getOrCreateKey(): SecretKey {
@@ -76,12 +77,20 @@ object SecureStorage {
         }
     }
 
-    fun savePaymentRecord(context: Context, password: String, scriptJson: String, payMethod: String = "") {
+    fun savePaymentRecord(
+        context: Context,
+        password: String,
+        scriptJson: String,
+        payMethod: String = "",
+        updatedAt: Long = System.currentTimeMillis(),
+        scriptVersion: String = "",
+    ) {
         val obj = JSONObject().apply {
             put("password", password)
             put("scriptJson", scriptJson)
             put("payMethod", payMethod)
-            put("updatedAt", System.currentTimeMillis())
+            put("updatedAt", updatedAt)
+            put("scriptVersion", scriptVersion)
         }
         val wrapped = encrypt(obj.toString().toByteArray(Charsets.UTF_8))
         File(context.filesDir, PAYMENT_FILE).writeText(wrapped, Charsets.UTF_8)
@@ -101,6 +110,7 @@ object SecureStorage {
             scriptJson = obj.optString("scriptJson", ""),
             payMethod = obj.optString("payMethod", ""),
             updatedAt = obj.optLong("updatedAt", 0L),
+            scriptVersion = obj.optString("scriptVersion", ""),
         )
     }
 
@@ -171,6 +181,11 @@ object SecureStorage {
         return String(plain, Charsets.UTF_8).trim()
     }
 
+    fun clearLastPayMethod(context: Context) {
+        val file = File(context.filesDir, LAST_PAY_METHOD_FILE)
+        if (file.exists()) file.delete()
+    }
+
     fun saveLastSuccessPayMethod(context: Context, method: String) {
         val wrapped = encrypt(method.trim().toByteArray(Charsets.UTF_8))
         File(context.filesDir, LAST_SUCCESS_PAY_METHOD_FILE).writeText(wrapped, Charsets.UTF_8)
@@ -185,5 +200,10 @@ object SecureStorage {
             return ""
         }
         return String(plain, Charsets.UTF_8).trim()
+    }
+
+    fun clearLastSuccessPayMethod(context: Context) {
+        val file = File(context.filesDir, LAST_SUCCESS_PAY_METHOD_FILE)
+        if (file.exists()) file.delete()
     }
 }
