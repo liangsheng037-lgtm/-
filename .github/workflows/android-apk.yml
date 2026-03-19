@@ -69,6 +69,12 @@ jobs:
           APP_NAME="$(jq -r '.data.name // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
           PACKAGE_NAME="$(jq -r '.data.packageName // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
           ICON_URL="$(jq -r '.data.iconUrl // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          if [ -z "$PACKAGE_NAME" ]; then
+            echo "packageName is empty in build-config"
+            exit 1
+          fi
+          echo "PACKAGE_NAME=$PACKAGE_NAME"
+          echo "ICON_URL=$ICON_URL"
           echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
           echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
           echo "ICON_URL=$ICON_URL" >> $GITHUB_ENV
@@ -101,10 +107,23 @@ jobs:
           BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
           BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
           if [ -n "$ICON_URL" ] && [ "$ICON_URL" != "null" ]; then
+            ICON_SCRIPT=""
             if [ -f "tools/replace_icon.py" ]; then
-              python3 tools/replace_icon.py --icon-url "$ICON_URL" --res-dir "app/src/main/res"
+              ICON_SCRIPT="tools/replace_icon.py"
+            elif [ -f "android/tools/replace_icon.py" ]; then
+              ICON_SCRIPT="android/tools/replace_icon.py"
+            fi
+            RES_DIR=""
+            if [ -d "app/src/main/res" ]; then
+              RES_DIR="app/src/main/res"
+            elif [ -d "android/app/src/main/res" ]; then
+              RES_DIR="android/app/src/main/res"
+            fi
+            if [ -n "$ICON_SCRIPT" ] && [ -n "$RES_DIR" ]; then
+              python3 "$ICON_SCRIPT" --icon-url "$ICON_URL" --res-dir "$RES_DIR"
             else
-              echo "tools/replace_icon.py not found, skip icon replace"
+              echo "replace icon prerequisites missing: script=$ICON_SCRIPT res=$RES_DIR"
+              exit 1
             fi
             curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
               -H "Content-Type: application/json" \
