@@ -6,6 +6,15 @@ on:
       apk_id:
         required: true
         type: string
+      agent_code:
+        required: false
+        type: string
+      application_id:
+        required: false
+        type: string
+      template_id:
+        required: false
+        type: string
       build_tag:
         required: true
         type: string
@@ -59,6 +68,9 @@ jobs:
         env:
           BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
           BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+          INPUT_AGENT_CODE: ${{ inputs.agent_code }}
+          INPUT_APPLICATION_ID: ${{ inputs.application_id }}
+          INPUT_TEMPLATE_ID: ${{ inputs.template_id }}
         run: |
           BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
           BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
@@ -68,7 +80,17 @@ jobs:
           cat build-config.json | head -c 2000
           APP_NAME="$(jq -r '.data.name // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
           PACKAGE_NAME="$(jq -r '.data.packageName // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          TEMPLATE_ID_CFG="$(jq -r '.data.templateId // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
           ICON_URL="$(jq -r '.data.iconUrl // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          AGENT_CODE="$(echo "${INPUT_AGENT_CODE}" | xargs)"
+          APPLICATION_ID="$(echo "${INPUT_APPLICATION_ID}" | xargs)"
+          TEMPLATE_ID="$(echo "${INPUT_TEMPLATE_ID}" | xargs)"
+          if [ -z "$APPLICATION_ID" ]; then
+            APPLICATION_ID="$PACKAGE_NAME"
+          fi
+          if [ -z "$TEMPLATE_ID" ]; then
+            TEMPLATE_ID="$TEMPLATE_ID_CFG"
+          fi
           if [ -z "$PACKAGE_NAME" ]; then
             echo "packageName is empty in build-config"
             exit 1
@@ -77,6 +99,9 @@ jobs:
           echo "ICON_URL=$ICON_URL"
           echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
           echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
+          echo "APPLICATION_ID=$APPLICATION_ID" >> $GITHUB_ENV
+          echo "TEMPLATE_ID=$TEMPLATE_ID" >> $GITHUB_ENV
+          echo "AGENT_CODE=$AGENT_CODE" >> $GITHUB_ENV
           echo "ICON_URL=$ICON_URL" >> $GITHUB_ENV
 
       - name: Report config loaded
@@ -159,7 +184,9 @@ jobs:
       - name: Build APK
         env:
           ORG_GRADLE_PROJECT_APK_ID: ${{ inputs.apk_id }}
-          ORG_GRADLE_PROJECT_APPLICATION_ID: ${{ env.PACKAGE_NAME }}
+          ORG_GRADLE_PROJECT_AGENT_CODE: ${{ env.AGENT_CODE }}
+          ORG_GRADLE_PROJECT_APPLICATION_ID: ${{ env.APPLICATION_ID }}
+          ORG_GRADLE_PROJECT_TEMPLATE_ID: ${{ env.TEMPLATE_ID }}
           ORG_GRADLE_PROJECT_APP_NAME: ${{ env.APP_NAME }}
           ORG_GRADLE_PROJECT_KEYSTORE_FILE: ${{ github.workspace }}/keystore.jks
           ORG_GRADLE_PROJECT_KEYSTORE_PASSWORD: ${{ env.KS_PASS }}
