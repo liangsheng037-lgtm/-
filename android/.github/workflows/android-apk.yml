@@ -1,0 +1,277 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_id:
+        required: true
+        type: string
+      agent_code:
+        required: false
+        type: string
+      application_id:
+        required: false
+        type: string
+      template_id:
+        required: false
+        type: string
+      build_tag:
+        required: true
+        type: string
+
+run-name: Build ${{ inputs.apk_id }} ${{ inputs.build_tag }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Check backend config
+        env:
+          BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
+          BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+        run: |
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          if [ -z "$BUILD_BACKEND_BASE_URL" ]; then
+            echo "BUILD_BACKEND_BASE_URL is empty"
+            exit 1
+          fi
+          if [ -z "$BUILD_REPORT_TOKEN" ]; then
+            echo "BUILD_REPORT_TOKEN is empty"
+            exit 1
+          fi
+
+      - name: Report start
+        env:
+          BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
+          BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
+            -H "Content-Type: application/json" \
+            -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
+            -H "ngrok-skip-browser-warning: 1" \
+            -d "{\"buildId\":\"${{ inputs.build_tag }}\",\"apkId\":\"${{ inputs.apk_id }}\",\"status\":\"RUNNING\",\"progress\":5,\"message\":\"start\",\"githubRunId\":${{ github.run_id }},\"githubRunUrl\":\"$RUN_URL\"}" || true
+
+      - name: Fetch config
+        env:
+          BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
+          BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+          INPUT_AGENT_CODE: ${{ inputs.agent_code }}
+          INPUT_APPLICATION_ID: ${{ inputs.application_id }}
+          INPUT_TEMPLATE_ID: ${{ inputs.template_id }}
+        run: |
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          curl -sS "$BUILD_BACKEND_BASE_URL/api/build/apk-config?apkId=${{ inputs.apk_id }}" \
+            -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
+            -H "ngrok-skip-browser-warning: 1" > build-config.json
+          cat build-config.json | head -c 2000
+          APP_NAME="$(jq -r '.data.name // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          PACKAGE_NAME="$(jq -r '.data.packageName // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          TEMPLATE_ID_CFG="$(jq -r '.data.templateId // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          ICON_URL="$(jq -r '.data.iconUrl // ""' build-config.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          AGENT_CODE="$(echo "${INPUT_AGENT_CODE}" | xargs)"
+          APPLICATION_ID="$(echo "${INPUT_APPLICATION_ID}" | xargs)"
+          TEMPLATE_ID="$(echo "${INPUT_TEMPLATE_ID}" | xargs)"
+          if [ -z "$APPLICATION_ID" ]; then
+            APPLICATION_ID="$PACKAGE_NAME"
+          fi
+          if [ -z "$TEMPLATE_ID" ]; then
+            TEMPLATE_ID="$TEMPLATE_ID_CFG"
+          fi
+          if [ -z "$PACKAGE_NAME" ]; then
+            echo "packageName is empty in build-config"
+            exit 1
+          fi
+          echo "PACKAGE_NAME=$PACKAGE_NAME"
+          echo "ICON_URL=$ICON_URL"
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
+          echo "APPLICATION_ID=$APPLICATION_ID" >> $GITHUB_ENV
+          echo "TEMPLATE_ID=$TEMPLATE_ID" >> $GITHUB_ENV
+          echo "AGENT_CODE=$AGENT_CODE" >> $GITHUB_ENV
+          echo "ICON_URL=$ICON_URL" >> $GITHUB_ENV
+
+      - name: Report config loaded
+        env:
+          BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
+          BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+        run: |
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
+            -H "Content-Type: application/json" \
+            -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
+            -H "ngrok-skip-browser-warning: 1" \
+            -d "{\"buildId\":\"${{ inputs.build_tag }}\",\"apkId\":\"${{ inputs.apk_id }}\",\"status\":\"RUNNING\",\"progress\":20,\"message\":\"config_loaded\"}" || true
+
+      - name: Setup python deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebp-dev
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pillow
+
+      - name: Replace icon
+        env:
+          BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
+          BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+        run: |
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          if [ -n "$ICON_URL" ] && [ "$ICON_URL" != "null" ]; then
+            ICON_SCRIPT=""
+            if [ -f "tools/replace_icon.py" ]; then
+              ICON_SCRIPT="tools/replace_icon.py"
+            elif [ -f "android/tools/replace_icon.py" ]; then
+              ICON_SCRIPT="android/tools/replace_icon.py"
+            fi
+            RES_DIR=""
+            if [ -d "app/src/main/res" ]; then
+              RES_DIR="app/src/main/res"
+            elif [ -d "android/app/src/main/res" ]; then
+              RES_DIR="android/app/src/main/res"
+            fi
+            if [ -n "$ICON_SCRIPT" ] && [ -n "$RES_DIR" ]; then
+              python3 "$ICON_SCRIPT" --icon-url "$ICON_URL" --res-dir "$RES_DIR"
+            else
+              echo "replace icon prerequisites missing: script=$ICON_SCRIPT res=$RES_DIR"
+              exit 1
+            fi
+            curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
+              -H "Content-Type: application/json" \
+              -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
+              -H "ngrok-skip-browser-warning: 1" \
+              -d "{\"buildId\":\"${{ inputs.build_tag }}\",\"apkId\":\"${{ inputs.apk_id }}\",\"status\":\"RUNNING\",\"progress\":40,\"message\":\"icon_applied\"}" || true
+          else
+            curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
+              -H "Content-Type: application/json" \
+              -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
+              -H "ngrok-skip-browser-warning: 1" \
+              -d "{\"buildId\":\"${{ inputs.build_tag }}\",\"apkId\":\"${{ inputs.apk_id }}\",\"status\":\"RUNNING\",\"progress\":40,\"message\":\"icon_skipped\"}" || true
+          fi
+
+      - name: Generate signing key
+        run: |
+          KS_PASS="$(openssl rand -hex 16)"
+          KEY_PASS="$KS_PASS"
+          echo "KS_PASS=$KS_PASS" >> $GITHUB_ENV
+          echo "KEY_PASS=$KEY_PASS" >> $GITHUB_ENV
+          echo "KEY_ALIAS=release" >> $GITHUB_ENV
+          keytool -genkeypair -v \
+            -keystore keystore.jks \
+            -storepass "$KS_PASS" \
+            -keypass "$KEY_PASS" \
+            -alias "release" \
+            -dname "CN=Android,O=Demo,C=CN" \
+            -storetype JKS \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650
+
+      - name: Build APK
+        env:
+          ORG_GRADLE_PROJECT_APK_ID: ${{ inputs.apk_id }}
+          ORG_GRADLE_PROJECT_AGENT_CODE: ${{ env.AGENT_CODE }}
+          ORG_GRADLE_PROJECT_APPLICATION_ID: ${{ env.APPLICATION_ID }}
+          ORG_GRADLE_PROJECT_TEMPLATE_ID: ${{ env.TEMPLATE_ID }}
+          ORG_GRADLE_PROJECT_APP_NAME: ${{ env.APP_NAME }}
+          ORG_GRADLE_PROJECT_KEYSTORE_FILE: ${{ github.workspace }}/keystore.jks
+          ORG_GRADLE_PROJECT_KEYSTORE_PASSWORD: ${{ env.KS_PASS }}
+          ORG_GRADLE_PROJECT_KEY_ALIAS: ${{ env.KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_KEY_PASSWORD: ${{ env.KEY_PASS }}
+          BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
+          BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+        run: |
+          chmod +x ./gradlew
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
+            -H "Content-Type: application/json" \
+            -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
+            -H "ngrok-skip-browser-warning: 1" \
+            -d "{\"buildId\":\"${{ inputs.build_tag }}\",\"apkId\":\"${{ inputs.apk_id }}\",\"status\":\"BUILDING\",\"progress\":60,\"message\":\"gradle_start\"}" || true
+          ./gradlew :app:assembleDebug :app:assembleRelease
+
+      - name: List APK outputs
+        run: |
+          find . -type f -name '*.apk' | head -n 50 || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ inputs.apk_id }}-${{ inputs.build_tag }}
+          path: |
+            **/.trae-build/**/outputs/apk/**/*.apk
+            **/build/outputs/apk/**/*.apk
+            **/*.apk
+
+      - name: Upload APK to backend
+        if: success()
+        env:
+          BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
+          BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+        run: |
+          set -e
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          APK_PATH="$(find . -type f -name '*.apk' | grep -E '/release/|release' | head -n 1 || true)"
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH="$(find . -type f -name '*.apk' | head -n 1 || true)"
+          fi
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK found"
+            exit 1
+          fi
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
+          curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/upload-apk" \
+            -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
+            -H "ngrok-skip-browser-warning: 1" \
+            -F "buildId=${{ inputs.build_tag }}" \
+            -F "apkId=${{ inputs.apk_id }}" \
+            -F "file=@$APK_PATH" > upload.json
+          cat upload.json | head -c 2000
+          ARTIFACT_URL="$(jq -r '.data.artifactUrl // ""' upload.json | tr -d '\r' | sed 's/`//g' | xargs)"
+          echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_ENV
+
+      - name: Report success
+        if: success()
+        env:
+          BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
+          BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
+            -H "Content-Type: application/json" \
+            -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
+            -H "ngrok-skip-browser-warning: 1" \
+            -d "{\"buildId\":\"${{ inputs.build_tag }}\",\"apkId\":\"${{ inputs.apk_id }}\",\"status\":\"SUCCESS\",\"progress\":100,\"message\":\"done\",\"githubRunId\":${{ github.run_id }},\"githubRunUrl\":\"$RUN_URL\",\"artifactUrl\":\"${{ env.ARTIFACT_URL }}\"}" || true
+
+      - name: Report failure
+        if: failure()
+        env:
+          BUILD_BACKEND_BASE_URL: ${{ vars.BUILD_BACKEND_BASE_URL || secrets.BUILD_BACKEND_BASE_URL }}
+          BUILD_REPORT_TOKEN: ${{ secrets.BUILD_REPORT_TOKEN || vars.BUILD_REPORT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
+          BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
+            -H "Content-Type: application/json" \
+            -H "X-Build-Token: $BUILD_REPORT_TOKEN" \
+            -H "ngrok-skip-browser-warning: 1" \
+            -d "{\"buildId\":\"${{ inputs.build_tag }}\",\"apkId\":\"${{ inputs.apk_id }}\",\"status\":\"FAILED\",\"progress\":100,\"message\":\"failed\",\"githubRunId\":${{ github.run_id }},\"githubRunUrl\":\"$RUN_URL\"}" || true

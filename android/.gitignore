@@ -1,0 +1,16 @@
+/.idea/
+/.trae-build/
+/build/
+/app/build/
+/app/build_alt/
+/app/build_alt_v6/
+/app/build_liangsheng_v1/
+/tools/__pycache__/
+/tools/ui_similarity/
+*.log
+*logcat*.txt
+*backtrace*.txt
+/honeypot*.txt
+/latest*.txt
+/full_logcat*.txt
+*.apk
