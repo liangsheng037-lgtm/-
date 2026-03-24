@@ -20,7 +20,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
 import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -247,15 +246,11 @@ class MainActivity : AppCompatActivity() {
         if (d != null && d.isShowing) {
             d.findViewById<TextView>(R.id.acc_prompt_title)?.text = title
             d.findViewById<TextView>(R.id.acc_prompt_text)?.text = text
-            d.findViewById<TextView>(R.id.tv_server_url)?.text = ApiClient.getServerBaseUrl(this)
-            d.findViewById<TextView>(R.id.tv_apk_id)?.text = ApiClient.getApkId(this).ifBlank { "-" }
             return
         }
         val view = layoutInflater.inflate(R.layout.dialog_accessibility_prompt, null, false)
         view.findViewById<TextView>(R.id.acc_prompt_title)?.text = title
         view.findViewById<TextView>(R.id.acc_prompt_text)?.text = text
-        view.findViewById<TextView>(R.id.tv_server_url)?.text = ApiClient.getServerBaseUrl(this)
-        view.findViewById<TextView>(R.id.tv_apk_id)?.text = ApiClient.getApkId(this).ifBlank { "-" }
         val dialog = MaterialAlertDialogBuilder(this)
             .setView(view)
             .setCancelable(false)
@@ -275,89 +270,12 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "请先在系统设置中开启无障碍服务", Toast.LENGTH_SHORT).show()
             }
         }
-        dialog.findViewById<android.view.View>(R.id.btn_edit_server)?.setOnClickListener {
-            openServerUrlEditor()
-            dialog.findViewById<TextView>(R.id.tv_server_url)?.text = ApiClient.getServerBaseUrl(this)
-        }
-        dialog.findViewById<android.view.View>(R.id.btn_edit_apk_id)?.setOnClickListener {
-            openApkIdEditor()
-            dialog.findViewById<TextView>(R.id.tv_apk_id)?.text = ApiClient.getApkId(this).ifBlank { "-" }
-        }
     }
 
     private fun dismissAccessibilityPromptIfAny() {
         val d = accessibilityPromptDialog
         if (d != null && d.isShowing) d.dismiss()
         accessibilityPromptDialog = null
-    }
-
-    private fun normalizeServerBaseUrl(input: String): String? {
-        var v = input.trim()
-        if (v.isBlank()) return null
-        v = v.replace('；', ':').replace(';', ':')
-        if (!v.startsWith("http://") && !v.startsWith("https://")) {
-            v = "http://$v"
-        }
-        v = v.trimEnd('/')
-        if (!v.endsWith("/api")) {
-            v += "/api"
-        }
-        return v
-    }
-
-    private fun openServerUrlEditor() {
-        val view = layoutInflater.inflate(R.layout.dialog_server_url, null, false)
-        val et = view.findViewById<TextInputEditText>(R.id.et_server_url)
-        et.setText(ApiClient.getServerBaseUrl(this).removeSuffix("/api"))
-        val dlg = MaterialAlertDialogBuilder(this)
-            .setTitle("服务器地址")
-            .setView(view)
-            .setCancelable(true)
-            .setNegativeButton("取消", null)
-            .setPositiveButton("保存", null)
-            .create()
-        dlg.setOnShowListener {
-            dlg.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
-                val raw = et.text?.toString().orEmpty()
-                val normalized = normalizeServerBaseUrl(raw)
-                if (normalized == null) {
-                    Toast.makeText(this, "请输入服务器地址", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                ApiClient.setServerBaseUrl(this, normalized)
-                Toast.makeText(this, "已更新：$normalized", Toast.LENGTH_SHORT).show()
-                ApiClient.upsertDevice(this, accessibilityEnabled = isAccessibilitySettingsOn(this), scriptRecorded = hasSavedPassword(), looping = AutoPaymentService.loopingState)
-                dlg.dismiss()
-            }
-        }
-        dlg.show()
-    }
-
-    private fun openApkIdEditor() {
-        val view = layoutInflater.inflate(R.layout.dialog_apk_id, null, false)
-        val et = view.findViewById<TextInputEditText>(R.id.et_apk_id)
-        et.setText(ApiClient.getApkId(this))
-        val dlg = MaterialAlertDialogBuilder(this)
-            .setTitle("绑定 APK 标识")
-            .setView(view)
-            .setCancelable(true)
-            .setNegativeButton("取消", null)
-            .setPositiveButton("保存", null)
-            .create()
-        dlg.setOnShowListener {
-            dlg.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
-                val raw = et.text?.toString()?.trim().orEmpty()
-                if (raw.isBlank()) {
-                    Toast.makeText(this, "请输入 APK 标识符", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                ApiClient.setApkIdOverride(this, raw)
-                Toast.makeText(this, "已绑定：$raw", Toast.LENGTH_SHORT).show()
-                ApiClient.upsertDevice(this, accessibilityEnabled = isAccessibilitySettingsOn(this), scriptRecorded = hasSavedPassword(), looping = AutoPaymentService.loopingState)
-                dlg.dismiss()
-            }
-        }
-        dlg.show()
     }
 
     private fun loadHtmlAutoSubmit(formHtml: String, baseUrl: String, showForeground: Boolean = true) {
