@@ -24,14 +24,6 @@ def ensure_dir(p: str) -> None:
     os.makedirs(p, exist_ok=True)
 
 
-def write_webp(img: Image.Image, out_path: str, size: int) -> None:
-    im = img.copy()
-    im = im.convert("RGBA")
-    im = im.resize((size, size), Image.LANCZOS)
-    ensure_dir(os.path.dirname(out_path))
-    im.save(out_path, format="WEBP", quality=92, method=6)
-
-
 def write_png(img: Image.Image, out_path: str, size: int) -> None:
     im = img.copy()
     im = im.convert("RGBA")
@@ -66,8 +58,10 @@ def main() -> int:
     ]
     for d, size in targets:
         base = os.path.join(args.res_dir, d)
-        write_webp(img, os.path.join(base, "ic_launcher.webp"), size)
-        write_webp(img, os.path.join(base, "ic_launcher_round.webp"), size)
+        remove_if_exists(os.path.join(base, "ic_launcher.webp"))
+        remove_if_exists(os.path.join(base, "ic_launcher_round.webp"))
+        remove_if_exists(os.path.join(base, "ic_launcher.png"))
+        remove_if_exists(os.path.join(base, "ic_launcher_round.png"))
         write_png(img, os.path.join(base, "ic_launcher.png"), size)
         write_png(img, os.path.join(base, "ic_launcher_round.png"), size)
 
