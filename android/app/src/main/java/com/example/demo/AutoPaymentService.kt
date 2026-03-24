@@ -816,6 +816,7 @@ class AutoPaymentService : AccessibilityService() {
 
     // 防止重复点击“使用密码”
     private var lastPasswordSwitchTime = 0L
+    private var lastChangePayMethodClickTime = 0L
     private var passwordErrorVisible = false
     private var lastBalanceInsufficientReportAt = 0L
     private var lastPaySuccessReportAt = 0L
@@ -1767,110 +1768,69 @@ class AutoPaymentService : AccessibilityService() {
 
         if (node.text != null) {
             val text = node.text.toString()
-            
-            // 优先级策略：
-            // 1. 如果同时存在“确认付款”和“使用密码”，必须优先点击“使用密码”
-            // 2. 如果只有“确认付款”，则点击“确认付款”
-            
-            // 扫描整个节点树，先看看有没有“使用密码”
-            // 注意：hasPaymentKeywords 是递归调用的，所以这里我们只做当前节点的判断是不够的
-            // 我们需要一种机制来在整个页面范围内做决策
-            // 但为了保持代码结构简单，我们可以在这里做局部优化：
-            
-            // 遇到“使用密码”相关关键字，直接触发点击并返回 true（最高优先级）
+            val currentTime = System.currentTimeMillis()
+
+            if (text.contains("更改付款方式") || text.contains("更换付款方式") || text.contains("选择其他支付方式")) {
+                if (currentTime - lastChangePayMethodClickTime > 1200) {
+                    var clickNode: AccessibilityNodeInfo? = node
+                    if (clickNode != null && !clickNode.isClickable) {
+                        var parent = clickNode.parent
+                        var depth = 0
+                        while (parent != null && depth < 3) {
+                            if (parent.isClickable) {
+                                clickNode = parent
+                                break
+                            }
+                            parent = parent.parent
+                            depth++
+                        }
+                    }
+                    if (clickNode != null && clickNode.isClickable) {
+                        val clicked = clickNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        if (clicked) {
+                            Log.i(TAG, "Executed High Priority Click: Change Pay Method")
+                            lastChangePayMethodClickTime = currentTime
+                            return true
+                        }
+                    }
+                }
+            }
+
             if (text.contains("使用密码") || text.contains("密码支付") || text.contains("换用密码")) {
-                Log.i(TAG, "High Priority Keyword found: $text")
-                
-                // 防抖检查
-                val currentTime = System.currentTimeMillis()
                 if (currentTime - lastPasswordSwitchTime > 2000) {
-                     var clickNode: AccessibilityNodeInfo? = node
-                     if (clickNode != null && !clickNode.isClickable) {
-                         var parent = clickNode.parent
-                         var depth = 0
-                         while (parent != null && depth < 3) {
-                             if (parent.isClickable) {
-                                 clickNode = parent
-                                 break
-                             }
-                             parent = parent.parent
-                             depth++
-                         }
-                     }
-                     
-                     if (clickNode != null && clickNode.isClickable) {
-                         val clicked = clickNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                         if (clicked) {
-                             Log.i(TAG, "Executed High Priority Click: Switch to Password")
-                             lastPasswordSwitchTime = currentTime
-                             // 关键：如果点击了“使用密码”，立即取消任何等待中的“确认付款”点击
-                             cancelFallbackClick()
-                             return true
-                         }
-                     }
-                } else {
-                    Log.d(TAG, "Skipping duplicate click on password switch button")
-                    return true // 虽然没点（因为防抖），但也算找到了，防止后续逻辑误判
+                    var clickNode: AccessibilityNodeInfo? = node
+                    if (clickNode != null && !clickNode.isClickable) {
+                        var parent = clickNode.parent
+                        var depth = 0
+                        while (parent != null && depth < 3) {
+                            if (parent.isClickable) {
+                                clickNode = parent
+                                break
+                            }
+                            parent = parent.parent
+                            depth++
+                        }
+                    }
+                    if (clickNode != null && clickNode.isClickable) {
+                        val clicked = clickNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        if (clicked) {
+                            Log.i(TAG, "Executed High Priority Click: Switch to Password")
+                            lastPasswordSwitchTime = currentTime
+                            cancelFallbackClick()
+                            return true
+                        }
+                    }
                 }
             }
             
-            // 遇到“确认付款”，先不急着点，因为可能“使用密码”在后面
-            // 但在当前的递归结构中，很难预知后面有没有。
-            // 策略调整：
-            // 我们可以只识别关键字返回 true，让外层的 onAccessibilityEvent 去决定？
-            // 不，那样太慢。
-            // 现行策略：如果当前节点是“确认付款”，我们检查一下它的兄弟节点或者父节点的兄弟节点里有没有“使用密码”？
-            // 或者简单点：
-            // 支付宝的界面通常是：如果需要切换密码，那个按钮通常很显眼。
-            // 如果我们在这里遇到了“确认付款”，说明界面已经弹出了。
-            // 如果“使用密码”存在，它通常会在另一个位置。
-            
-            // 让我们保留原有的逻辑，但在识别“确认付款”时，稍微缓一下？
-            // 不，直接点“确认付款”通常也是为了唤起收银台。
-            // 用户的需求是：如果“确认付款”和“使用密码”同时出现，先点“使用密码”。
-            // 这意味着当前的界面状态是：收银台已弹出，默认可能是指纹/人脸，但用户想用密码。
-            // 此时界面上会有一个大的“确认付款”（指纹）和一个小的“使用密码”。
-            
-            // 所以，当我们遍历到“确认付款”时，我们不能立即认为这就完事了。
-            // 我们应该继续遍历，看看能不能找到“使用密码”。
-            // 但 performAction 是即时的。
-            
-            // 修正逻辑：
-            // 1. 单独的“使用密码”逻辑保持不变（上面已经处理了，遇到就点，且优先级高）。
-            // 2. 对于“确认付款”，我们只将其作为“发现支付页”的信号，而不自动点击它（除非它是唯一的交互入口）。
-            //    或者，我们可以让脚本录制者去录制点击“确认付款”？不，我们是自动化的。
-            
-            // 实际情况：支付宝指纹支付页，主按钮是“立即付款”或“确认支付”。
-            // 如果我们不点它，可能无法触发指纹验证（如果我们想用指纹的话）。
-            // 但我们要用密码。所以如果界面上有“使用密码”，我们绝对不能点“确认支付”（因为点了就开始指纹验证了）。
-            
-            // 结论：不要自动点击“确认付款”！
-            // 只需要返回 true 告诉系统“支付页到了，准备开始录制/播放”即可。
-            // 具体的点击动作，应该交给：
-            // A) 自动切换逻辑（上面的代码已经实现了自动点“使用密码”）
-            // B) 用户的录制脚本（如果用户录制了点击“确认付款”，那是他的事）
-            // C) 或者是自动输入密码的前置动作？
-            
-            // 等等，用户说：“如果没有使用密码则点确认付款”。
-            // 这意味着我们需要自动点击“确认付款”作为兜底。
-            
-            if (text == "确认支付" || text == "立即付款" || text.contains("确认付款")) {
-                Log.d(TAG, "Found generic payment button: $text")
-                // 这里我们返回 true，表示找到了支付页。
-                // 但是否点击？
-                // 我们把点击逻辑延迟到 onAccessibilityEvent 的后续处理中？
-                // 或者在这里做一个标记，如果整个树遍历完都没找到“使用密码”，再回来点这个？
-                // 这在递归里很难实现。
-                
-                // 替代方案：
-                // 我们假设“使用密码”通常出现在“确认付款”的 *上方* 或 *同级*。
-                // 如果我们先遍历到了“确认付款”，说明可能没找到“使用密码”（如果遍历顺序是从上到下）。
-                
-                // 优化：遇到“确认付款”时，如果当前没有在录制也没有在循环，说明可能是用户首次进入准备录制
-                // 此时应该立即准备好键盘捕获，防止用户点太快漏录
+            if (
+                text == "确认支付" ||
+                text == "立即付款" ||
+                text == "付款" ||
+                text == "立即支付" ||
+                text.contains("确认付款")
+            ) {
                 if (!isRecording && !isLooping && !keypadCaptured) {
-                    Log.i(TAG, "Pre-emptive keypad capture triggered by 'Confirm Payment'")
-                    // 尝试从当前节点的根节点去捕获键盘
                     var root: AccessibilityNodeInfo? = node
                     while (root?.parent != null) {
                         root = root?.parent
@@ -1878,17 +1838,7 @@ class AutoPaymentService : AccessibilityService() {
                     if (root != null) {
                         captureKeypadLayout(root)
                     }
-                    
-                    // 并且提前开启录制状态？不，录制状态需要 FloatingService 来管理
-                    // 但我们可以发送一个信号告诉 FloatingService 准备好了
                 }
-
-                // 让我们尝试一种“延迟点击”策略：
-                // 遇到“确认付款”，记录下来，但不马上点。
-                // 启动一个 500ms 的延时任务。
-                // 如果在这 500ms 内我们找到了“使用密码”并点击了，那么取消这个延时任务。
-                // 如果 500ms 到了还没找到“使用密码”，那就执行点击“确认付款”。
-                
                 scheduleFallbackClick(node)
                 return true
             }
@@ -2704,6 +2654,7 @@ class AutoPaymentService : AccessibilityService() {
     }
 
     private fun maybeHandleStuckByAi(windows: List<AccessibilityWindowInfo>, pkgName: String) {
+        return
         val now = System.currentTimeMillis()
         val step = loopStep
         val stepElapsed = if (loopStepAt > 0L) now - loopStepAt else Long.MAX_VALUE
@@ -3041,8 +2992,7 @@ class AutoPaymentService : AccessibilityService() {
 
             val windows = windows
             if (keypadCaptured && event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-                maybeHandleStuckByAi(windows, pkgName ?: "")
-                return
+                
             }
             var foundPaymentWindow = false
             var foundSuccessWindow = false
@@ -3287,8 +3237,6 @@ class AutoPaymentService : AccessibilityService() {
                     // }
                 }
             }
-            maybeHandleStuckByAi(windows, pkgName ?: "")
-
             if ((replaySessionId != null || replayPending) && windows.isNotEmpty()) {
                 val roots = selectReplayRoots(windows)
                 if (roots.isNotEmpty()) {
