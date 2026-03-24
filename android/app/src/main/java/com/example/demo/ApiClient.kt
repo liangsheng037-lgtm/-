@@ -31,7 +31,7 @@ object ApiClient {
     private const val PREFS_NAME = "app_config"
     private const val KEY_SERVER_BASE_URL = "server_base_url"
     private const val KEY_APK_ID_OVERRIDE = "apk_id_override"
-    private const val DEFAULT_SERVER_BASE_URL = "http://127.0.0.1:5321/api"
+    private const val DEFAULT_SERVER_BASE_URL = BuildConfig.SERVER_BASE_URL
 
     private fun parseIsoToEpochMillis(isoRaw: String): Long {
         val iso = isoRaw.trim()
@@ -61,8 +61,13 @@ object ApiClient {
             prefs.edit().putString(KEY_SERVER_BASE_URL, migrated.trimEnd('/')).apply()
             return migrated
         }
-        if (v.startsWith("https://127.0.0.1") || v.startsWith("https://localhost")) {
-            val migrated = v.replaceFirst("https://", "http://")
+        if (
+            v.startsWith("http://127.0.0.1") ||
+            v.startsWith("https://127.0.0.1") ||
+            v.startsWith("http://localhost") ||
+            v.startsWith("https://localhost")
+        ) {
+            val migrated = DEFAULT_SERVER_BASE_URL
             prefs.edit().putString(KEY_SERVER_BASE_URL, migrated.trimEnd('/')).apply()
             return migrated
         }

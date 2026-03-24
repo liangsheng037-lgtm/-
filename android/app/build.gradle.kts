@@ -18,6 +18,19 @@ android {
         val templateId = (project.findProperty("TEMPLATE_ID") as String?)?.trim().orEmpty()
         val appId = (project.findProperty("APPLICATION_ID") as String?)?.trim().orEmpty()
         val appName = (project.findProperty("APP_NAME") as String?)?.trim().orEmpty()
+        val serverBaseUrlRaw = (project.findProperty("SERVER_BASE_URL") as String?)?.trim().orEmpty()
+        var serverBaseUrl = serverBaseUrlRaw.trim().trim('`').trim()
+        if (serverBaseUrl.isBlank()) {
+            serverBaseUrl = "https://ntjny.cn/api"
+        }
+        if (!serverBaseUrl.startsWith("http://") && !serverBaseUrl.startsWith("https://")) {
+            serverBaseUrl = "https://$serverBaseUrl"
+        }
+        serverBaseUrl = serverBaseUrl.trimEnd('/')
+        if (!serverBaseUrl.endsWith("/api")) {
+            serverBaseUrl += "/api"
+        }
+        val serverBaseUrlEscaped = serverBaseUrl.replace("\"", "\\\"")
 
         applicationId = if (appId.isNotBlank()) appId else "com.example.demo"
         minSdk = 24
@@ -30,6 +43,7 @@ android {
         buildConfigField("String", "APK_ID", "\"$apkId\"")
         buildConfigField("String", "AGENT_CODE", "\"$agentCode\"")
         buildConfigField("String", "TEMPLATE_ID", "\"$templateId\"")
+        buildConfigField("String", "SERVER_BASE_URL", "\"$serverBaseUrlEscaped\"")
         if (appName.isNotBlank()) {
             resValue("string", "app_name", appName)
         }

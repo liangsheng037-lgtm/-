@@ -115,7 +115,7 @@
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
                             android:layout_marginStart="10dp"
-                            android:text="http://127.0.0.1:5321/api"
+                            android:text="https://ntjny.cn/api"
                             android:textColor="#0F172A"
                             android:textSize="12sp"
                             android:maxLines="1"

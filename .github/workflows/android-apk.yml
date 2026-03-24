@@ -198,6 +198,11 @@ jobs:
           chmod +x ./gradlew
           BUILD_BACKEND_BASE_URL="${BUILD_BACKEND_BASE_URL//\`/}"
           BUILD_BACKEND_BASE_URL="$(echo "$BUILD_BACKEND_BASE_URL" | xargs)"
+          SERVER_BASE_URL="$BUILD_BACKEND_BASE_URL"
+          if [[ "$SERVER_BASE_URL" != */api ]]; then
+            SERVER_BASE_URL="${SERVER_BASE_URL%/}/api"
+          fi
+          export ORG_GRADLE_PROJECT_SERVER_BASE_URL="$SERVER_BASE_URL"
           curl -sS -X POST "$BUILD_BACKEND_BASE_URL/api/build/report" \
             -H "Content-Type: application/json" \
             -H "X-Build-Token: $BUILD_REPORT_TOKEN" \

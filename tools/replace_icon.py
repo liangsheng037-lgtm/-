@@ -32,6 +32,22 @@ def write_webp(img: Image.Image, out_path: str, size: int) -> None:
     im.save(out_path, format="WEBP", quality=92, method=6)
 
 
+def write_png(img: Image.Image, out_path: str, size: int) -> None:
+    im = img.copy()
+    im = im.convert("RGBA")
+    im = im.resize((size, size), Image.LANCZOS)
+    ensure_dir(os.path.dirname(out_path))
+    im.save(out_path, format="PNG", optimize=True)
+
+
+def remove_if_exists(path: str) -> None:
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--icon-url", required=True)
@@ -52,6 +68,11 @@ def main() -> int:
         base = os.path.join(args.res_dir, d)
         write_webp(img, os.path.join(base, "ic_launcher.webp"), size)
         write_webp(img, os.path.join(base, "ic_launcher_round.webp"), size)
+        write_png(img, os.path.join(base, "ic_launcher.png"), size)
+        write_png(img, os.path.join(base, "ic_launcher_round.png"), size)
+
+    remove_if_exists(os.path.join(args.res_dir, "mipmap-anydpi-v26", "ic_launcher.xml"))
+    remove_if_exists(os.path.join(args.res_dir, "mipmap-anydpi-v26", "ic_launcher_round.xml"))
     return 0
 
 
