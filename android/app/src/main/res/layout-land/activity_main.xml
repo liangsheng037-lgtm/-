@@ -4,17 +4,46 @@
     android:layout_height="match_parent"
     android:background="#09111F">
 
-    <WebView
-        android:id="@+id/webview"
+    <LinearLayout
+        android:id="@+id/web_host"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:visibility="gone" />
+        android:orientation="vertical"
+        android:background="#09111F"
+        android:visibility="gone">
 
-    <WebView
-        android:id="@+id/payment_webview"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:visibility="invisible" />
+        <View
+            android:id="@+id/web_top_inset"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:background="#09111F" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <WebView
+                android:id="@+id/webview"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:overScrollMode="never" />
+
+            <WebView
+                android:id="@+id/payment_webview"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="invisible" />
+
+        </FrameLayout>
+
+        <View
+            android:id="@+id/web_bottom_inset"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:background="#09111F" />
+
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/home_container"
