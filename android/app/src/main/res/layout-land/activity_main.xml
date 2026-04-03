@@ -61,12 +61,4 @@
         </LinearLayout>
 
     </LinearLayout>
-
-    <include
-        android:id="@+id/payment_confirm_overlay"
-        layout="@layout/activity_payment_done_confirm"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:visibility="gone" />
-
 </FrameLayout>

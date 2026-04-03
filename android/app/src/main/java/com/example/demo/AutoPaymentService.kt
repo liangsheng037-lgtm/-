@@ -1190,6 +1190,7 @@ class AutoPaymentService : AccessibilityService() {
         if (t.isBlank()) return false
         if (t.startsWith("添加")) return false
         if (t.contains("添加银行卡")) return false
+        if (t.contains("使用名下账号付款")) return false
         if (t.contains("小荷包")) return false
         return true
     }
@@ -1211,6 +1212,7 @@ class AutoPaymentService : AccessibilityService() {
         if (compact.isBlank()) return false
         if (compact.startsWith("添加")) return false
         if (compact.contains("添加银行卡")) return false
+        if (compact.contains("使用名下账号付款")) return false
         if (compact.contains("小荷包")) return false
 
         val hasYueBao = compact.contains("余额宝")
@@ -2057,6 +2059,7 @@ class AutoPaymentService : AccessibilityService() {
 
     // 存储首次录制的时间，用于在开头几秒放宽过滤
     private var recordingStartTime = 0L
+    private var passwordInputActiveUntil = 0L
 
     // 存储最近的点击事件，用于回溯补录
     private val recentClicks = java.util.LinkedList<Pair<Long, AccessibilityNodeInfo>>()
@@ -3048,6 +3051,7 @@ class AutoPaymentService : AccessibilityService() {
             var foundSuccessWindow = false
             var foundPasswordError = false
             var balanceInsufficientText: String? = null
+            val passwordInputActive = System.currentTimeMillis() < passwordInputActiveUntil
 
             for (window in windows) {
                 val root = window.root ?: continue
@@ -3075,7 +3079,7 @@ class AutoPaymentService : AccessibilityService() {
                     balanceInsufficientText = findBalanceInsufficientText(root)
                 }
                 
-                if (isRecording && !foundSuccessWindow && hasSuccessKeywords(root)) {
+                if (isRecording && !foundSuccessWindow && !foundPasswordPromptWindow && !passwordInputActive && hasSuccessKeywords(root)) {
                     foundSuccessWindow = true
                 }
 
@@ -3084,7 +3088,7 @@ class AutoPaymentService : AccessibilityService() {
                 }
                 
                 // 即使不在录制模式下，也要检测支付成功页面，用于触发循环支付的下一轮
-                if (!isRecording && isLooping && !foundSuccessWindow && hasSuccessKeywords(root)) {
+                if (!isRecording && isLooping && !foundSuccessWindow && !foundPasswordPromptWindow && !passwordInputActive && hasSuccessKeywords(root)) {
                     foundSuccessWindow = true
                     Log.i(TAG, "Detected payment success in LOOP mode.")
                 }
@@ -3092,6 +3096,8 @@ class AutoPaymentService : AccessibilityService() {
                 if (!isRecording && !isLooping && !foundSuccessWindow &&
                     (replaySessionId != null || replayPending) &&
                     replayRecordType == "PASSWORD" &&
+                    !foundPasswordPromptWindow &&
+                    !passwordInputActive &&
                     hasSuccessKeywords(root)
                 ) {
                     foundSuccessWindow = true
@@ -3323,6 +3329,7 @@ class AutoPaymentService : AccessibilityService() {
             setLoopStep(LoopStep.AWAIT_SUCCESS)
         }
         lastPlayTime = System.currentTimeMillis()
+        passwordInputActiveUntil = System.currentTimeMillis() + 8000L
         
         Handler(Looper.getMainLooper()).post {
             removeTouchLayer()
@@ -3382,6 +3389,7 @@ class AutoPaymentService : AccessibilityService() {
             
             for ((index, action) in playbackActions.withIndex()) {
                 if (action.type == ScriptActionType.CLICK) {
+                    passwordInputActiveUntil = System.currentTimeMillis() + 1800L
                     var targetX = action.x
                     var targetY = action.y
                     
@@ -3473,6 +3481,7 @@ class AutoPaymentService : AccessibilityService() {
                 // 使用固定极速延迟 (150ms -> 200ms)，增加稳定性，避免丢字
                 delay(200)
             }
+            passwordInputActiveUntil = System.currentTimeMillis() + 2500L
             
             // 支付动作执行完毕后，尝试自动返回 App
             // 等待足够的时间让支付结果页出现（比如 2 秒），然后执行返回操作

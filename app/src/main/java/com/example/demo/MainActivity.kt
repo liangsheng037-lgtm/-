@@ -29,7 +29,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var webView: android.webkit.WebView
     private lateinit var homeContainer: android.view.View
-    private lateinit var paymentConfirmOverlay: android.view.View
     private var accessibilityPromptDialog: androidx.appcompat.app.AlertDialog? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var recordPayInFlight: Boolean = false
@@ -106,7 +105,6 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.status_text)
         webView = findViewById(R.id.webview)
         homeContainer = findViewById(R.id.home_container)
-        paymentConfirmOverlay = findViewById(R.id.payment_confirm_overlay)
 
         val homeInitialPaddingLeft = homeContainer.paddingLeft
         val homeInitialPaddingTop = homeContainer.paddingTop
@@ -362,11 +360,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun maybeProcessPendingNextRound() {
         val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
-        val needConfirmAfterRecord = prefs.getBoolean("pending_confirm_payment_done", false)
-        if (needConfirmAfterRecord) {
-            showPaymentDoneConfirmOverlay()
-            return
-        }
         val pendingNextRound = prefs.getBoolean("pending_next_round", false)
         val needDecrement = prefs.getBoolean("pending_need_decrement", false)
         if (!pendingNextRound) return
@@ -431,27 +424,6 @@ class MainActivity : AppCompatActivity() {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 startPayOrderRound(nextAmount)
             }, 500)
-        }
-    }
-
-    private fun showPaymentDoneConfirmOverlay() {
-        paymentConfirmOverlay.visibility = android.view.View.VISIBLE
-
-        paymentConfirmOverlay.findViewById<android.view.View>(R.id.btn_confirm_payment_done)?.setOnClickListener {
-            val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
-            prefs.edit()
-                .putBoolean("pending_confirm_payment_done", false)
-                .putBoolean("pending_next_round", true)
-                .putBoolean("pending_need_decrement", false)
-                .apply()
-            paymentConfirmOverlay.visibility = android.view.View.GONE
-            maybeProcessPendingNextRound()
-        }
-
-        paymentConfirmOverlay.findViewById<android.view.View>(R.id.btn_cancel_payment_done)?.setOnClickListener {
-            val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
-            prefs.edit().putBoolean("pending_confirm_payment_done", false).apply()
-            paymentConfirmOverlay.visibility = android.view.View.GONE
         }
     }
 

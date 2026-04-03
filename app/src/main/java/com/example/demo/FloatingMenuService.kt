@@ -528,8 +528,7 @@ class FloatingMenuService : Service() {
         }
         getSharedPreferences("app_config", Context.MODE_PRIVATE)
             .edit()
-            .putBoolean("pending_confirm_payment_done", true)
-            .putBoolean("pending_next_round", false)
+            .putBoolean("pending_next_round", true)
             .putBoolean("pending_need_decrement", false)
             .apply()
         ApiClient.upsertDevice(this, accessibilityEnabled = AutoPaymentService.instance != null, scriptRecorded = true, looping = AutoPaymentService.loopingState)
