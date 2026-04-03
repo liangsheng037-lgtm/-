@@ -36,6 +36,8 @@ class MainActivity : AppCompatActivity() {
     private var recordPaySessionActive: Boolean = false
     private var recordPaySessionAt: Long = 0L
     private var pendingTemplateInjectJs: String = ""
+    private var payOrderRoundInFlight: Boolean = false
+    private var payOrderRoundStartedAt: Long = 0L
 
     // 标记是否需要自动开始下一轮
     // private var pendingNextRound = false // 移除内存变量，改用 SharedPreferences 持久化
@@ -47,13 +49,26 @@ class MainActivity : AppCompatActivity() {
                 // 收到支付成功信号，标记需要进行下一轮，并持久化存储
                 // 即使 App 在后台被杀，下次启动也能恢复
                 val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
+                payOrderRoundInFlight = false
+                payOrderRoundStartedAt = 0L
                 prefs.edit().putBoolean("pending_next_round", true).apply()
                 
             } else if (intent?.action == "com.example.demo.NO_AVAILABLE_METHOD") {
                 val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
+                payOrderRoundInFlight = false
+                payOrderRoundStartedAt = 0L
                 prefs.edit()
                     .putBoolean("pending_next_round", true)
                     .putBoolean("pending_need_decrement", true)
+                    .apply()
+                maybeProcessPendingNextRound()
+            } else if (intent?.action == "com.example.demo.RETRY_LOOP_ORDER") {
+                val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
+                payOrderRoundInFlight = false
+                payOrderRoundStartedAt = 0L
+                prefs.edit()
+                    .putBoolean("pending_next_round", true)
+                    .putBoolean("pending_need_decrement", false)
                     .apply()
                 maybeProcessPendingNextRound()
             } else if (intent?.action == "com.example.demo.START_RECORD_PAY") {
@@ -94,6 +109,7 @@ class MainActivity : AppCompatActivity() {
         val filter = android.content.IntentFilter().apply {
             addAction("com.example.demo.PAYMENT_SUCCESS")
             addAction("com.example.demo.NO_AVAILABLE_METHOD")
+            addAction("com.example.demo.RETRY_LOOP_ORDER")
             addAction("com.example.demo.START_RECORD_PAY")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -327,6 +343,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startPayOrderRound(amountOverride: Long? = null) {
+        val now = System.currentTimeMillis()
+        if (payOrderRoundInFlight) {
+            if (now - payOrderRoundStartedAt < 15000) {
+                return
+            }
+            payOrderRoundInFlight = false
+        }
+        payOrderRoundInFlight = true
+        payOrderRoundStartedAt = now
         CoroutineScope(Dispatchers.Main).launch {
             val result = withContext(Dispatchers.IO) {
                 ApiClient.syncLatestScriptBeforeAutoPayBlocking(this@MainActivity)
@@ -335,6 +360,8 @@ class MainActivity : AppCompatActivity() {
             val url = result.payTarget
             val err = result.error
             if (url.isNullOrBlank()) {
+                payOrderRoundInFlight = false
+                payOrderRoundStartedAt = 0L
                 return@launch
             }
             val orderId = result.orderId?.trim().orEmpty()

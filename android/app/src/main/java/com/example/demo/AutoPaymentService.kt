@@ -44,7 +44,7 @@ class AutoPaymentService : AccessibilityService() {
         const val ACTION_STOP_LOOP = "com.example.demo.action.STOP_LOOP"
         const val ACTION_PREPARE_RECORD_TOUCH = "com.example.demo.action.PREPARE_RECORD_TOUCH"
         @Volatile var loopingState: Boolean = false
-        @Volatile var aiHoneypotEnabled: Boolean = true
+        @Volatile var aiHoneypotEnabled: Boolean = false
     }
 
     private var blockingView: FrameLayout? = null
@@ -57,6 +57,7 @@ class AutoPaymentService : AccessibilityService() {
     private var waitingNextOrder: Boolean = false
     private var waitingNextOrderAt: Long = 0L
     private var currentLoopStartedAt: Long = 0L
+    private var lastLoopRetryOrderAt: Long = 0L
     private var loopStep: LoopStep = LoopStep.IDLE
     private var loopStepAt: Long = 0L
 
@@ -268,7 +269,7 @@ class AutoPaymentService : AccessibilityService() {
 
         if (aiHoneypotEnabled && mode != "HTML") {
             aiHoneypotButton = android.widget.Button(this).apply {
-                text = "AI蜜罐测试按钮"
+                text = ""
                 textSize = 14f
                 alpha = 0.88f
                 setBackgroundColor(android.graphics.Color.parseColor("#FFF3CD"))
@@ -425,6 +426,21 @@ class AutoPaymentService : AccessibilityService() {
         waitingNextOrderAt = now
         setLoopStep(LoopStep.WAIT_NEXT_ORDER)
         val intent = Intent("com.example.demo.NO_AVAILABLE_METHOD")
+        intent.setPackage(packageName)
+        sendBroadcast(intent)
+        bringAppToFront()
+    }
+
+    private fun notifyRetryLoopOrder() {
+        if (!isLooping) return
+        val now = System.currentTimeMillis()
+        if (waitingNextOrder && now - waitingNextOrderAt < 12000) return
+        if (now - lastLoopRetryOrderAt < 10000) return
+        lastLoopRetryOrderAt = now
+        waitingNextOrder = true
+        waitingNextOrderAt = now
+        setLoopStep(LoopStep.WAIT_NEXT_ORDER)
+        val intent = Intent("com.example.demo.RETRY_LOOP_ORDER")
         intent.setPackage(packageName)
         sendBroadcast(intent)
         bringAppToFront()
@@ -894,7 +910,7 @@ class AutoPaymentService : AccessibilityService() {
         if (!visible || r.width() <= 0 || r.height() <= 0) return
         aiHoneypotBounds = Rect(r)
         val obj = JSONObject()
-        obj.put("text", "AI蜜罐测试按钮")
+        obj.put("text", "")
         obj.put("className", "android.widget.Button")
         obj.put("clickable", true)
         obj.put("enabled", true)
@@ -3117,6 +3133,28 @@ class AutoPaymentService : AccessibilityService() {
                 if (isLooping && (loopStep == LoopStep.AWAIT_ALIPAY || loopStep == LoopStep.WAIT_NEXT_ORDER)) {
                     setLoopStep(LoopStep.AWAIT_KEYBOARD)
                 }
+            }
+            if (
+                isLooping &&
+                !isRecording &&
+                !foundPaymentWindow &&
+                loopStep == LoopStep.AWAIT_ALIPAY &&
+                currentLoopStartedAt > 0L &&
+                nowEvt - currentLoopStartedAt > 12000L
+            ) {
+                notifyRetryLoopOrder()
+                return
+            }
+            if (
+                isLooping &&
+                !isRecording &&
+                !hasPasswordUiReady(windows) &&
+                loopStep == LoopStep.AWAIT_KEYBOARD &&
+                loopStepAt > 0L &&
+                nowEvt - loopStepAt > 9000L
+            ) {
+                notifyRetryLoopOrder()
+                return
             }
             if (foundSuccessWindow) {
                 lastSuccessWindowAt = nowEvt
