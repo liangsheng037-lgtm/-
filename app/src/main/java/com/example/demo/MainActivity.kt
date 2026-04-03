@@ -12,7 +12,6 @@ import android.text.TextUtils.SimpleStringSplitter
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.util.Log
-import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -29,8 +28,6 @@ import kotlinx.coroutines.withContext
 class MainActivity : AppCompatActivity() {
 
     private lateinit var statusText: TextView
-    private lateinit var settingsButton: Button
-    private lateinit var btnAlipay: Button
     private lateinit var webView: android.webkit.WebView
     private lateinit var homeContainer: android.view.View
     private lateinit var paymentConfirmOverlay: android.view.View
@@ -111,8 +108,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         statusText = findViewById(R.id.status_text)
-        settingsButton = findViewById(R.id.settings_button)
-        btnAlipay = findViewById(R.id.btn_alipay)
         webView = findViewById(R.id.webview)
         homeContainer = findViewById(R.id.home_container)
         paymentConfirmOverlay = findViewById(R.id.payment_confirm_overlay)
@@ -224,16 +219,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        settingsButton.setOnClickListener {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            startActivity(intent)
-        }
-
-        // floatButton.setOnClickListener { ... } // 移除
-
-        btnAlipay.setOnClickListener {
-            handleAlipayPayment()
-        }
     }
 
     private fun serverOrigin(): String {
@@ -694,10 +679,8 @@ class MainActivity : AppCompatActivity() {
         val isServiceOn = isAccessibilitySettingsOn(this)
         if (isServiceOn) {
             statusText.text = getString(R.string.service_enabled)
-            settingsButton.isEnabled = false
         } else {
             statusText.text = getString(R.string.service_disabled)
-            settingsButton.isEnabled = true
         }
         
         // floatButton.isEnabled = isServiceOn // 移除
