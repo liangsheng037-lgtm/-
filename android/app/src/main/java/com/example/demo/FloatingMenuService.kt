@@ -138,7 +138,7 @@ class FloatingMenuService : Service() {
         )
         
         windowManager.addView(blockingView, params)
-        Toast.makeText(this, "全屏遮罩已开启，触摸已被禁用", Toast.LENGTH_SHORT).show()
+//        Toast.makeText(this, "全屏遮罩已开启，触摸已被禁用", Toast.LENGTH_SHORT).show()
     }
 
     private fun removeBlockingOverlay() {
@@ -189,7 +189,7 @@ class FloatingMenuService : Service() {
                 scriptActions.add(action)
             }
             Log.d(TAG, "Loaded ${scriptActions.size} actions from secure record")
-            Toast.makeText(this, "已加载保存的脚本，可直接回放", Toast.LENGTH_SHORT).show()
+//            Toast.makeText(this, "已加载保存的脚本，可直接回放", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load script: ${e.message}")
         }
@@ -220,7 +220,7 @@ class FloatingMenuService : Service() {
             btnPlay.isEnabled = false
             btnAddKeypad.isEnabled = false
             startRecordingMode()
-            Toast.makeText(this, "进入录制模式，请直接操作屏幕", Toast.LENGTH_LONG).show()
+//            Toast.makeText(this, "进入录制模式，请直接操作屏幕", Toast.LENGTH_LONG).show()
         }
 
         btnStopRecord.setOnClickListener {
@@ -230,7 +230,7 @@ class FloatingMenuService : Service() {
             btnPlay.isEnabled = true
             btnAddKeypad.isEnabled = true
             stopRecordingMode()
-            Toast.makeText(this, "录制结束，共 ${scriptActions.size} 个点", Toast.LENGTH_SHORT).show()
+//            Toast.makeText(this, "录制结束，共 ${scri？ptActions.size} 个点", Toast.LENGTH_SHORT).show()
         }
 
         btnAddKeypad.setOnClickListener {
@@ -519,7 +519,7 @@ class FloatingMenuService : Service() {
             ApiClient.logEvent(this, opType = "SCRIPT_RECORD_FAIL", durationMs = 0, level = "WARN", keyword = "password_empty")
 
             Handler(Looper.getMainLooper()).post {
-                Toast.makeText(this, "密码为空，已清空脚本", Toast.LENGTH_LONG).show()
+//                Toast.makeText(this, "密码为空，已清空脚本", Toast.LENGTH_LONG).show()
             }
             return
         }
@@ -552,7 +552,7 @@ class FloatingMenuService : Service() {
         ApiClient.logEvent(this, opType = "SCRIPT_RECORD_SUCCESS", durationMs = 0, level = "INFO", keyword = "script_saved")
 
         Handler(Looper.getMainLooper()).post {
-            Toast.makeText(this, "已保存有效密码", Toast.LENGTH_LONG).show()
+//            Toast.makeText(this, "已保存有效密码", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -570,7 +570,7 @@ class FloatingMenuService : Service() {
 
     fun playScript() {
         if (scriptActions.isNotEmpty()) {
-            Toast.makeText(this, "开始自动回放脚本", Toast.LENGTH_SHORT).show()
+//            Toast.makeText(this, "开始自动回放脚本", Toast.LENGTH_SHORT).show()
             AutoPaymentService.instance?.performScript(scriptActions)
         }
     }
