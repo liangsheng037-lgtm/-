@@ -316,6 +316,10 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
                 val origin = serverOrigin()
+                val intent = Intent(this@MainActivity, AutoPaymentService::class.java).apply {
+                    action = AutoPaymentService.ACTION_PREPARE_RECORD_TOUCH
+                }
+                startService(intent)
                 pendingTemplateInjectJs = ""
                 loadHtmlAutoSubmit(form, origin, showForeground = false)
             } finally {

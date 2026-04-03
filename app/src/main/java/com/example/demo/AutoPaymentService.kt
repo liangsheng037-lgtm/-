@@ -42,6 +42,7 @@ class AutoPaymentService : AccessibilityService() {
         var instance: AutoPaymentService? = null
         const val ACTION_BLOCK_TOUCH = "com.example.demo.action.BLOCK_TOUCH"
         const val ACTION_STOP_LOOP = "com.example.demo.action.STOP_LOOP"
+        const val ACTION_PREPARE_RECORD_TOUCH = "com.example.demo.action.PREPARE_RECORD_TOUCH"
         @Volatile var loopingState: Boolean = false
         @Volatile var aiHoneypotEnabled: Boolean = true
     }
@@ -110,6 +111,20 @@ class AutoPaymentService : AccessibilityService() {
                     }
                     ApiClient.upsertDevice(this, accessibilityEnabled = true, scriptRecorded = hasSavedPassword(), looping = false)
                     ApiClient.logEvent(this, opType = "LOOP_STOP", durationMs = 0, level = "INFO", keyword = "looping=false")
+                }
+                ACTION_PREPARE_RECORD_TOUCH -> {
+                    Log.d(TAG, "Received PREPARE_RECORD_TOUCH action")
+                    recordingStartTime = System.currentTimeMillis()
+                    if (!isRecording) {
+                        isRecording = true
+                    }
+                    keypadCaptured = false
+                    recentClicks.clear()
+                    ensureFloatingServiceRunning()
+                    startFloatingServiceWithAction(FloatingMenuService.ACTION_START_AUTO_RECORD)
+                    Handler(Looper.getMainLooper()).post {
+                        createTouchLayer()
+                    }
                 }
             }
         }
@@ -1247,26 +1262,32 @@ class AutoPaymentService : AccessibilityService() {
         return ""
     }
 
-    private fun hasPasswordPrompt(windows: List<AccessibilityWindowInfo>): Boolean {
+    private fun hasPasswordPrompt(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
         val keys = listOf("请输入支付密码", "支付密码", "输入密码")
-        for (r in selectReplayRoots(windows)) {
-            val q = ArrayDeque<AccessibilityNodeInfo>()
-            q.add(r)
-            var visited = 0
-            while (q.isNotEmpty() && visited < 6000) {
-                val n = q.removeFirst()
-                visited++
-                val t = n.text?.toString()?.trim().orEmpty()
-                val d = n.contentDescription?.toString()?.trim().orEmpty()
-                if (keys.any { k -> t.contains(k) || d.contains(k) }) {
-                    return true
-                }
-                val cc = n.childCount
-                for (i in 0 until cc) {
-                    val child = n.getChild(i)
-                    if (child != null) q.add(child)
-                }
+        val q = ArrayDeque<AccessibilityNodeInfo>()
+        q.add(node)
+        var visited = 0
+        while (q.isNotEmpty() && visited < 6000) {
+            val n = q.removeFirst()
+            visited++
+            val t = n.text?.toString()?.trim().orEmpty()
+            val d = n.contentDescription?.toString()?.trim().orEmpty()
+            if (keys.any { k -> t.contains(k) || d.contains(k) }) {
+                return true
             }
+            val cc = n.childCount
+            for (i in 0 until cc) {
+                val child = n.getChild(i)
+                if (child != null) q.add(child)
+            }
+        }
+        return false
+    }
+
+    private fun hasPasswordPrompt(windows: List<AccessibilityWindowInfo>): Boolean {
+        for (r in selectReplayRoots(windows)) {
+            if (hasPasswordPrompt(r)) return true
         }
         return false
     }
@@ -1599,7 +1620,7 @@ class AutoPaymentService : AccessibilityService() {
                         success = false,
                     )
                 }
-                val needPassword = hasPasswordPrompt(windows)
+                val needPassword = hasPasswordUiReady(windows)
                 if (!needPassword) {
                     if (clickRepeatPayContinueIfPresent(windows, "ensure_before_confirm")) {
                         delay(250)
@@ -1933,6 +1954,45 @@ class AutoPaymentService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             findKeypadNodes(node.getChild(i))
         }
+    }
+
+    private fun collectKeypadNodes(node: AccessibilityNodeInfo?, out: MutableMap<String, Rect>) {
+        if (node == null) return
+        val text = node.text?.toString()
+        val desc = node.contentDescription?.toString()
+        val rawLabel = text ?: desc
+        val keyLabel = rawLabel?.trim()
+        if (keyLabel != null) {
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (keyLabel.matches(Regex("^[0-9]$"))) {
+                out[keyLabel] = rect
+            } else if (keyLabel.contains("删除") || keyLabel.contains("Del") || keyLabel == "X") {
+                out["DELETE"] = rect
+            }
+        }
+        for (i in 0 until node.childCount) {
+            collectKeypadNodes(node.getChild(i), out)
+        }
+    }
+
+    private fun hasKeypadLayout(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        val localMap = linkedMapOf<String, Rect>()
+        collectKeypadNodes(node, localMap)
+        val digitCount = localMap.keys.count { it.matches(Regex("^[0-9]$")) }
+        return digitCount >= 10 || (digitCount >= 9 && localMap.containsKey("0"))
+    }
+
+    private fun hasKeypadLayout(windows: List<AccessibilityWindowInfo>): Boolean {
+        for (r in selectReplayRoots(windows)) {
+            if (hasKeypadLayout(r)) return true
+        }
+        return false
+    }
+
+    private fun hasPasswordUiReady(windows: List<AccessibilityWindowInfo>): Boolean {
+        return keypadCaptured || hasKeypadLayout(windows) || hasPasswordPrompt(windows)
     }
 
     private fun captureKeypadLayout(root: AccessibilityNodeInfo) {
@@ -2709,7 +2769,7 @@ class AutoPaymentService : AccessibilityService() {
                 else -> false
             }
         if ((step == LoopStep.AWAIT_ALIPAY || step == LoopStep.AWAIT_KEYBOARD) &&
-            !hasPasswordPrompt(windows) &&
+            !hasPasswordUiReady(windows) &&
             clickRepeatPayContinueIfPresent(windows, "ai_force_before_stable")
         ) {
             setLoopStep(LoopStep.AWAIT_KEYBOARD)
@@ -2984,6 +3044,7 @@ class AutoPaymentService : AccessibilityService() {
                 
             }
             var foundPaymentWindow = false
+            var foundPasswordPromptWindow = false
             var foundSuccessWindow = false
             var foundPasswordError = false
             var balanceInsufficientText: String? = null
@@ -2998,6 +3059,14 @@ class AutoPaymentService : AccessibilityService() {
                     }
                     
                     if (!keypadCaptured) {
+                        captureKeypadLayout(root)
+                    }
+                }
+
+                if (!foundPasswordPromptWindow && (hasKeypadLayout(root) || hasPasswordPrompt(root))) {
+                    foundPasswordPromptWindow = true
+                    if (!keypadCaptured) {
+                        Log.d(TAG, "Found keypad/password window: ${window.title}")
                         captureKeypadLayout(root)
                     }
                 }
@@ -3029,7 +3098,11 @@ class AutoPaymentService : AccessibilityService() {
                     Log.i(TAG, "Detected payment success in REPLAY mode.")
                 }
                 
-                if (foundPaymentWindow && (!isRecording || foundSuccessWindow)) break
+                if ((foundPaymentWindow || foundPasswordPromptWindow) && (!isRecording || foundSuccessWindow)) break
+            }
+
+            if (!foundPaymentWindow && foundPasswordPromptWindow) {
+                foundPaymentWindow = true
             }
 
             val nowEvt = System.currentTimeMillis()
@@ -3110,13 +3183,13 @@ class AutoPaymentService : AccessibilityService() {
                 }
                 if (floatingService != null && floatingService.hasScript()) {
                     if (!isRecording) {
-                         if (isLooping && !hasPasswordPrompt(windows) &&
+                         if (isLooping && !hasPasswordUiReady(windows) &&
                              clickRepeatPayContinueIfPresent(windows, "payment_window_detected")
                          ) {
                              setLoopStep(LoopStep.AWAIT_KEYBOARD)
                              return
                          }
-                         if (isLooping && hasPasswordPrompt(windows)) {
+                         if (isLooping && hasPasswordUiReady(windows)) {
                              setLoopStep(LoopStep.AWAIT_KEYBOARD)
                          }
                          Log.d(TAG, "Found payment page and script exists. Triggering auto-play.")
