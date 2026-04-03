@@ -13,7 +13,6 @@ import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.util.Log
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -51,21 +50,18 @@ class MainActivity : AppCompatActivity() {
                 val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
                 prefs.edit().putBoolean("pending_next_round", true).apply()
                 
-                Toast.makeText(this@MainActivity, "支付成功，等待返回App继续...", Toast.LENGTH_SHORT).show()
             } else if (intent?.action == "com.example.demo.NO_AVAILABLE_METHOD") {
                 val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
                 prefs.edit()
                     .putBoolean("pending_next_round", true)
                     .putBoolean("pending_need_decrement", true)
                     .apply()
-                Toast.makeText(this@MainActivity, "无可用付款方式，准备递减再试...", Toast.LENGTH_SHORT).show()
                 maybeProcessPendingNextRound()
             } else if (intent?.action == "com.example.demo.START_RECORD_PAY") {
                 val now = System.currentTimeMillis()
                 if (recordPaySessionActive && now - recordPaySessionAt < 25000) {
                     return
                 }
-                Toast.makeText(this@MainActivity, "开始录制：正在拉起1元录制订单...", Toast.LENGTH_SHORT).show()
                 startRecordPayFlow()
             }
         }
@@ -199,7 +195,6 @@ class MainActivity : AppCompatActivity() {
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                         startActivity(intent)
                     } catch (e: Exception) {
-                        Toast.makeText(this@MainActivity, "未检测到支付宝客户端", Toast.LENGTH_SHORT).show()
                     }
                     return true
                 }
@@ -252,7 +247,6 @@ class MainActivity : AppCompatActivity() {
             if (isAccessibilitySettingsOn(this)) {
                 dialog.dismiss()
             } else {
-                Toast.makeText(this, "请先在系统设置中开启无障碍服务", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -319,7 +313,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (form.isNullOrBlank()) {
                     recordPaySessionActive = false
-                    Toast.makeText(this@MainActivity, "录制下单失败: ${err ?: "unknown"}", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
                 val origin = serverOrigin()
@@ -340,7 +333,6 @@ class MainActivity : AppCompatActivity() {
             val url = result.payTarget
             val err = result.error
             if (url.isNullOrBlank()) {
-                Toast.makeText(this@MainActivity, "下单失败: ${err ?: "unknown"}", Toast.LENGTH_SHORT).show()
                 return@launch
             }
             val orderId = result.orderId?.trim().orEmpty()
@@ -376,7 +368,6 @@ class MainActivity : AppCompatActivity() {
         if (!pendingNextRound) return
         if (!isAccessibilitySettingsOn(this)) return
         prefs.edit().putBoolean("pending_next_round", false).putBoolean("pending_need_decrement", false).apply()
-        Toast.makeText(this, "正在发起下一笔支付...", Toast.LENGTH_SHORT).show()
         CoroutineScope(Dispatchers.Main).launch {
             val cfg = withContext(Dispatchers.IO) { ApiClient.fetchApkRuntimeConfigBlocking(this@MainActivity) }
             if (cfg != null) {
@@ -409,7 +400,6 @@ class MainActivity : AppCompatActivity() {
                     nextAmount = null
                 } else {
                 if (cur <= 1L) {
-                    Toast.makeText(this@MainActivity, "无法递减继续支付，已停止", Toast.LENGTH_LONG).show()
                     val stop = Intent(this@MainActivity, AutoPaymentService::class.java).apply {
                         action = AutoPaymentService.ACTION_STOP_LOOP
                     }
@@ -463,17 +453,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleAlipayPayment() {
         if (!isAccessibilitySettingsOn(this)) {
-            Toast.makeText(this, "请先开启辅助服务 (步骤1)", Toast.LENGTH_SHORT).show()
             return
         }
-        Toast.makeText(this, "正在同步脚本...", Toast.LENGTH_SHORT).show()
         CoroutineScope(Dispatchers.Main).launch {
             withContext(Dispatchers.IO) {
                 ApiClient.syncLatestScriptBeforeAutoPayBlocking(this@MainActivity)
             }
             val hasPassword = hasSavedPassword()
             if (hasPassword) {
-                Toast.makeText(this@MainActivity, "正在启动自动支付...", Toast.LENGTH_SHORT).show()
                 val cfg = withContext(Dispatchers.IO) { ApiClient.fetchApkRuntimeConfigBlocking(this@MainActivity) }
                 val prefs = getSharedPreferences("app_config", Context.MODE_PRIVATE)
                 val isFixedMode = cfg?.fixedAmountMode == true
@@ -488,7 +475,6 @@ class MainActivity : AppCompatActivity() {
                     startPayOrderRound(null)
                 }
             } else {
-                Toast.makeText(this@MainActivity, "请进行首次支付以录制密码", Toast.LENGTH_SHORT).show()
                 startRecordPayFlow()
             }
         }

@@ -17,7 +17,6 @@ import android.view.accessibility.AccessibilityWindowInfo
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
-import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -108,7 +107,6 @@ class AutoPaymentService : AccessibilityService() {
                     }
                     Handler(Looper.getMainLooper()).post {
                         removeBlockingOverlay()
-                        Toast.makeText(this, "循环支付已停止", Toast.LENGTH_SHORT).show()
                     }
                     ApiClient.upsertDevice(this, accessibilityEnabled = true, scriptRecorded = hasSavedPassword(), looping = false)
                     ApiClient.logEvent(this, opType = "LOOP_STOP", durationMs = 0, level = "INFO", keyword = "looping=false")
@@ -359,7 +357,6 @@ class AutoPaymentService : AccessibilityService() {
                     aiHoneypotBounds = r
                 }
             }
-            Toast.makeText(this, "全屏遮罩已开启，循环支付中...", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to add blocking overlay: ${e.message}")
         }
@@ -445,7 +442,6 @@ class AutoPaymentService : AccessibilityService() {
     private fun showHoneypotNotice(message: String) {
         val notice = aiHoneypotNoticeView
         if (notice == null) {
-            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
             return
         }
         notice.text = message
@@ -702,7 +698,6 @@ class AutoPaymentService : AccessibilityService() {
                     // 移除 6 位强制停止，改为仅提示，允许用户继续操作直到转账成功
                     if (currentActionsCount >= 6) {
                         Log.w(TAG, "Password length reached 6, but continuing until success detected")
-                         // Toast.makeText(this@AutoPaymentService, "已录制6位", Toast.LENGTH_SHORT).show()
                     }
 
                     if (matchedDigit != null) {
@@ -1585,9 +1580,6 @@ class AutoPaymentService : AccessibilityService() {
                                 level = "ERROR",
                                 keyword = "no_available_pay_method",
                             )
-                            Handler(Looper.getMainLooper()).post {
-                                Toast.makeText(this@AutoPaymentService, "无可用付款方式，准备递减或等待新订单", Toast.LENGTH_LONG).show()
-                            }
                             notifyNoAvailablePayMethod()
                             return@launch
                         }
@@ -1726,9 +1718,6 @@ class AutoPaymentService : AccessibilityService() {
                             level = "ERROR",
                             keyword = "no_available_pay_method",
                         )
-                        Handler(Looper.getMainLooper()).post {
-                            Toast.makeText(this@AutoPaymentService, "无可用付款方式，准备递减或等待新订单", Toast.LENGTH_LONG).show()
-                        }
                         notifyNoAvailablePayMethod()
                     }
                 }
@@ -3085,7 +3074,6 @@ class AutoPaymentService : AccessibilityService() {
                     }
                     Handler(Looper.getMainLooper()).post {
                         removeBlockingOverlay()
-                        Toast.makeText(this, "支付密码错误，已停止循环支付", Toast.LENGTH_LONG).show()
                     }
                     ApiClient.upsertDevice(this, accessibilityEnabled = true, scriptRecorded = hasSavedPassword(), looping = false)
                 }
@@ -3265,9 +3253,6 @@ class AutoPaymentService : AccessibilityService() {
         
         Handler(Looper.getMainLooper()).post {
             removeTouchLayer()
-            // 支付开始时，如果遮罩还在，可以保留遮罩，防止用户乱点
-            // 但如果需要在支付完成后自动关闭遮罩，可以在这里记录状态
-            Toast.makeText(this, "正在自动输入密码...", Toast.LENGTH_SHORT).show()
         }
 
         CoroutineScope(Dispatchers.Default).launch {
@@ -3338,13 +3323,6 @@ class AutoPaymentService : AccessibilityService() {
                             if (clickedByNode) {
                                 Log.i(TAG, "Smart Input [$index]: Clicked node for digit $digit")
                                 // 实时显示当前输入的数字
-                                Handler(Looper.getMainLooper()).post {
-                                    val toast = Toast.makeText(applicationContext, "输入: $digit", Toast.LENGTH_SHORT)
-                                    toast.setGravity(android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL, 0, 200)
-                                    toast.show()
-                                    // 500ms 后取消，避免堆积
-                                    Handler(Looper.getMainLooper()).postDelayed({ toast.cancel() }, 500)
-                                }
                                 break
                             } else {
                                 if (retry == 0) delay(50)
@@ -3416,15 +3394,6 @@ class AutoPaymentService : AccessibilityService() {
                         }
                         
                         // 实时显示当前输入的数字（模拟点击分支）
-                        if (digit != null) {
-                            Handler(Looper.getMainLooper()).post {
-                                val toast = Toast.makeText(applicationContext, "模拟输入: $digit", Toast.LENGTH_SHORT)
-                                toast.setGravity(android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL, 0, 200)
-                                toast.show()
-                                Handler(Looper.getMainLooper()).postDelayed({ toast.cancel() }, 500)
-                            }
-                        }
-                        
                         click(targetX, targetY)
                     }
                 }
