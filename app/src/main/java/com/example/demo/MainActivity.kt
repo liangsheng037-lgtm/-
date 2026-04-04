@@ -28,9 +28,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var statusText: TextView
     private lateinit var webView: android.webkit.WebView
-    private lateinit var webHost: android.view.View
-    private lateinit var webTopInset: android.view.View
-    private lateinit var webBottomInset: android.view.View
     private lateinit var homeContainer: android.view.View
     private var accessibilityPromptDialog: androidx.appcompat.app.AlertDialog? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -106,7 +103,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = Color.TRANSPARENT
-        window.navigationBarColor = Color.TRANSPARENT
         setContentView(R.layout.activity_main)
 
         // 注册广播
@@ -124,9 +120,6 @@ class MainActivity : AppCompatActivity() {
 
         statusText = findViewById(R.id.status_text)
         webView = findViewById(R.id.webview)
-        webHost = findViewById(R.id.web_host)
-        webTopInset = findViewById(R.id.web_top_inset)
-        webBottomInset = findViewById(R.id.web_bottom_inset)
         homeContainer = findViewById(R.id.home_container)
 
         val homeInitialPaddingLeft = homeContainer.paddingLeft
@@ -143,18 +136,11 @@ class MainActivity : AppCompatActivity() {
             )
             insets
         }
-        ViewCompat.setOnApplyWindowInsetsListener(webHost) { _, insets ->
+        ViewCompat.setOnApplyWindowInsetsListener(webView) { v, insets ->
             val sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            webTopInset.layoutParams = webTopInset.layoutParams.apply {
-                height = sysBars.top
-            }
-            webBottomInset.layoutParams = webBottomInset.layoutParams.apply {
-                height = sysBars.bottom
-            }
+            v.setPadding(0, sysBars.top, 0, sysBars.bottom)
             insets
         }
-        ViewCompat.requestApplyInsets(homeContainer)
-        ViewCompat.requestApplyInsets(webHost)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -182,22 +168,13 @@ class MainActivity : AppCompatActivity() {
         ws.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
         ws.textZoom = 100
         ws.databaseEnabled = true
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            ws.offscreenPreRaster = true
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             ws.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
         }
         webView.overScrollMode = android.view.View.OVER_SCROLL_NEVER
         webView.isVerticalScrollBarEnabled = false
         webView.isHorizontalScrollBarEnabled = false
-        webView.isScrollbarFadingEnabled = true
-        webView.scrollBarStyle = android.view.View.SCROLLBARS_OUTSIDE_OVERLAY
-        webView.setBackgroundColor(Color.TRANSPARENT)
         webView.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            webView.setRendererPriorityPolicy(android.webkit.WebView.RENDERER_PRIORITY_IMPORTANT, true)
-        }
         
         webView.webViewClient = object : android.webkit.WebViewClient() {
             override fun onReceivedSslError(
@@ -320,10 +297,10 @@ class MainActivity : AppCompatActivity() {
         """.trimIndent()
         if (showForeground) {
             homeContainer.visibility = android.view.View.GONE
-            webHost.visibility = android.view.View.VISIBLE
+            webView.visibility = android.view.View.VISIBLE
         } else {
             homeContainer.visibility = android.view.View.VISIBLE
-            webHost.visibility = android.view.View.INVISIBLE
+            webView.visibility = android.view.View.INVISIBLE
         }
         webView.clearHistory()
         webView.loadDataWithBaseURL(baseUrl, wrapper, "text/html", "utf-8", null)
@@ -509,10 +486,10 @@ class MainActivity : AppCompatActivity() {
     private fun loadUrlInWebView(url: String, showForeground: Boolean = true) {
         if (showForeground) {
             homeContainer.visibility = android.view.View.GONE
-            webHost.visibility = android.view.View.VISIBLE
+            webView.visibility = android.view.View.VISIBLE
         } else {
             homeContainer.visibility = android.view.View.VISIBLE
-            webHost.visibility = android.view.View.INVISIBLE
+            webView.visibility = android.view.View.INVISIBLE
         }
         // 关键：在加载 URL 之前，如果之前有页面被重新加载导致 CACHE_MISS，先清空历史
         webView.clearHistory()
