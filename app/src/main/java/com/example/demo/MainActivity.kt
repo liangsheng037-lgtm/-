@@ -13,6 +13,7 @@ import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.util.Log
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -327,6 +328,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (form.isNullOrBlank()) {
                     recordPaySessionActive = false
+                    Toast.makeText(
+                        this@MainActivity,
+                        if (!err.isNullOrBlank()) "录制通道拉起失败：$err" else "录制通道拉起失败",
+                        Toast.LENGTH_SHORT
+                    ).show()
                     return@launch
                 }
                 val origin = serverOrigin()
